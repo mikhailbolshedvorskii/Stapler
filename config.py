@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 
 # Загружаем .env только если он есть (для локальной разработки)
-# На VPS Google мы будем задавать эти переменные через окружение (Environment Variables)
 load_dotenv()
 
 class Config:
@@ -17,9 +16,12 @@ class Config:
     # Ключ API для Google Gemini (AI)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     
-    # Настройки базы данных (MongoDB или PostgreSQL)
-    # На Google Cloud лучше использовать Cloud SQL или Atlas
-    DATABASE_URL = os.getenv("DATABASE_URL", "mongodb://localhost:27017/stapler_db")
+    # Настройки базы данных (Firestore)
+    FIREBASE_KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase_key.json")
+    
+    # Настройки Proxy (важно для обхода блокировок)
+    # Добавляем PROXY_URL, так как main.py обращается к нему напрямую
+    PROXY_URL = os.getenv("PROXY_URL")
     
     # Уровень логирования
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
