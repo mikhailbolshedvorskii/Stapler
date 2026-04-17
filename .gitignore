@@ -1,0 +1,30 @@
+# Секретные ключи доступа (НИКОГДА не удалять отсюда)
+
+firebase_key.json
+stapler-474016-34d757023806.json
+.env
+*.json
+
+# Окружение и кэш Python
+
+venv/
+.venv/
+**/pycache/
+*.py[cod]
+*$py.class
+
+# Логи и временные файлы
+
+*.log
+temp_files/
+temp_images/
+
+# Системные файлы
+
+.DS_Store
+Thumbs.db
+
+# IDE и редакторы
+
+.vscode/
+.idea/
