@@ -1,63 +1,82 @@
+import json
+import logging
 from google import genai
 from google.genai import types
-import json
-import os
-import logging
 from config import config
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-# Инициализация клиента Gemini (требует pip install google-genai)
+# Инициализация клиента Gemini через новый SDK google-genai
 client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-async def analyze_document(file_path):
+async def analyze_document(file_path: str):
     """
-    Анализ медицинского документа с использованием gemini-3.1-flash-lite-preview.
-    Код оптимизирован: минимум строк за счет использования response_mime_type.
+    Анализ медицинского документа с использованием Gemini 3.1 Flash-Lite.
+    Используется формат JSON через response_mime_type для исключения ошибок парсинга.
     """
     try:
-        # Модель 3.1 Flash Lite идеально подходит для структурирования данных
+        # Прямое указание новейшей модели согласно правилам проекта
         MODEL_ID = "gemini-3.1-flash-lite-preview"
         
-        # Системные инструкции с экранированием фигурных скобок для Python f-строк
         system_prompt = (
-            "Ты — медицинский аналитик Stapler Health. Извлеки данные из анализа. "
-            "Верни ТОЛЬКО JSON объект с полями: "
-            "{{ "
-            "  'title': 'название анализа', "
-            "  'date': 'дата ISO', "
-            "  'laboratory': 'клиника', "
-            "  'indicators': [ "
-            "    {{'name': 'параметр', 'value': 'значение', 'unit': 'ед. изм.', 'norm': 'референс', 'status': 'normal/high/low'}} "
-            "  ], "
-            "  'summary': 'краткий медицинский вывод (1-2 предложения)' "
-            "}}"
+            "Ты — медицинский аналитик Stapler Health. Твоя задача: извлечь данные из предоставленного анализа. "
+            "Если параметр качественный (например, ВИЧ), используй 'Negative'/'Positive' для value и norm. "
+            "Всегда возвращай данные строго в формате JSON."
         )
 
-        # Чтение файла в байтах
+        # Чтение файла
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
-        # Определение типа контента
         mime_type = "application/pdf" if file_path.lower().endswith('.pdf') else "image/jpeg"
         
-        # Асинхронный запрос к Gemini
+        # Настройка конфигурации генерации с принудительным JSON
+        generation_config = types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "OBJECT",
+                "properties": {
+                    "title": {"type": "STRING"},
+                    "date": {"type": "STRING"},
+                    "laboratory": {"type": "STRING"},
+                    "indicators": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "name": {"type": "STRING"},
+                                "value": {"type": "STRING"},
+                                "unit": {"type": "STRING"},
+                                "norm": {"type": "STRING"},
+                                "status": {"type": "STRING", "enum": ["normal", "high", "low"]}
+                            },
+                            "required": ["name", "value", "status"]
+                        }
+                    },
+                    "summary": {"type": "STRING"}
+                },
+                "required": ["title", "indicators", "summary"]
+            }
+        )
+
+        # Вызов API
         response = await client.models.generate_content_async(
             model=MODEL_ID,
             contents=[
                 types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
                 system_prompt
             ],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json" # Ключевая настройка для чистого JSON
-            )
+            config=generation_config
         )
 
-        # Парсим результат. Благодаря response_mime_type, в response.text нет лишнего текста.
-        return json.loads(response.text)
+        # Благодаря response_mime_type, ответ приходит в виде чистого JSON
+        result_json = json.loads(response.text)
+        
+        logger.info(f"Документ успешно проанализирован: {result_json.get('title')}")
+        return result_json
 
     except Exception as e:
-        logger.error(f"Ошибка при анализе документа {file_path}: {e}")
+        logger.error(f"Критическая ошибка Gemini SDK (3.1 Lite) при анализе {file_path}: {e}")
         return None
