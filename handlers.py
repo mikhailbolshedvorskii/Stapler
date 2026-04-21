@@ -1,125 +1,134 @@
+import os
 import logging
-import firebase_admin
-from firebase_admin import credentials, firestore
+import asyncio
+from telebot import types
+from ai_parser import analyze_document
+from database import save_analysis_to_db, get_recent_analyses
+from formatters import format_analysis_card
 from config import config
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-def initialize_firebase():
+async def run_bot(bot):
     """
-    Инициализирует соединение с Firebase.
-    Использует путь к ключу из config.py.
+    Регистрация всех обработчиков сообщений.
     """
-    try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(config.FIREBASE_KEY_PATH)
-            firebase_admin.initialize_app(cred)
-        return firestore.client()
-    except Exception as e:
-        logger.error(f"Критическая ошибка при инициализации Firebase: {e}")
-        return None
 
-# Глобальный клиент базы данных
-db = initialize_firebase()
+    @bot.message_handler(commands=['start'])
+    async def send_welcome(message):
+        welcome_text = (
+            "👋 Привет! Я **Stapler** — твой интеллектуальный архив анализов.\n\n"
+            "📸 Просто пришли мне фото или PDF с результатами исследований, "
+            "и я расшифрую их, сохраню в базу и покажу динамику.\n\n"
+            "Используй /history, чтобы увидеть свои прошлые записи."
+        )
+        await bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
-async def save_analysis(user_id: str, analysis_data: dict):
-    """
-    Сохраняет оцифрованный анализ в Firestore.
-    
-    Путь: /artifacts/stapler-app/users/{userId}/analyses/{docId}
-    """
-    if not db:
-        logger.error("База данных не инициализирована.")
-        return None
-
-    try:
-        app_id = config.STAPLER_APP_ID
-        # Создаем ссылку на новый документ в основной коллекции анализов пользователя
-        doc_ref = db.collection("artifacts").document(app_id)\
-                    .collection("users").document(str(user_id))\
-                    .collection("analyses").document()
+    @bot.message_handler(commands=['history'])
+    async def show_history(message):
+        user_id = str(message.from_user.id)
+        await bot.send_chat_action(message.chat.id, 'typing')
         
-        # Сохраняем метаданные анализа
-        doc_ref.set({
-            "title": analysis_data.get("title", "Анализ"),
-            "date": analysis_data.get("date"),
-            "laboratory": analysis_data.get("laboratory", "Не указана"),
-            "summary": analysis_data.get("summary", ""),
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "raw_results_count": len(analysis_data.get("parameters", []))
-        })
+        try:
+            history = await get_recent_analyses(user_id, limit=5)
+            if not history:
+                await bot.reply_to(message, "Ваш архив пока пуст. Загрузите первый анализ!")
+                return
 
-        # Сохраняем каждый параметр (маркер) в отдельную подколлекцию
-        # Это позволяет в будущем строить графики по конкретному названию маркера
-        for marker in analysis_data.get("parameters", []):
-            marker_ref = doc_ref.collection("markers").document()
-            marker_ref.set({
-                "name": marker.get("name"),
-                "value": marker.get("value"), # Может быть числом или строкой ("отрицательно")
-                "unit": marker.get("unit", ""),
-                "norm": marker.get("norm", ""),
-                "status": marker.get("status", "normal"),
-                "date": analysis_data.get("date") # Дублируем дату для легкого поиска в подколлекциях
-            })
+            response = "📂 **Последние анализы из вашего архива:**\n\n"
+            for item in history:
+                response += f"🔹 {item.get('date', '??')} — {item.get('title', 'Анализ')}\n"
             
-        logger.info(f"✅ Анализ успешно сохранен. ID: {doc_ref.id}")
-        return doc_ref.id
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении анализа в БД: {e}")
-        return None
+            response += "\n_Чтобы получить подробности, просто загрузите новый файл._"
+            await bot.reply_to(message, response, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Ошибка при получении истории: {e}")
+            await bot.reply_to(message, "❌ Не удалось загрузить историю.")
 
-async def get_recent_analyses(user_id: str, limit: int = 5):
-    """
-    Загружает последние анализы пользователя.
-    Для каждого анализа также подгружаются все маркеры из подколлекции.
-    """
-    if not db:
-        return []
+    @bot.message_handler(content_types=['photo', 'document'])
+    async def handle_docs(message):
+        """
+        Обработка входящих файлов (фотографий или PDF).
+        """
+        user_id = str(message.from_user.id)
+        file_id = None
+        file_ext = ""
 
-    try:
-        app_id = config.STAPLER_APP_ID
-        analyses_ref = db.collection("artifacts").document(app_id)\
-                         .collection("users").document(str(user_id))\
-                         .collection("analyses")
-        
-        # Получаем документы. Согласно правилам, сложные фильтры без индексов не используем.
-        # Просто берем последние добавленные (по умолчанию Firestore возвращает по ID или времени создания)
-        docs = analyses_ref.limit(limit).stream()
-        
-        results = []
-        for d in docs:
-            analysis = d.to_dict()
-            analysis['id'] = d.id
-            
-            # Подгружаем маркеры для текущего анализа
-            markers_docs = d.reference.collection("markers").stream()
-            analysis['parameters'] = [m.to_dict() for m in markers_docs]
-            
-            results.append(analysis)
-            
-        # Сортируем в памяти по дате (если даты в формате YYYY-MM-DD)
-        results.sort(key=lambda x: x.get('date', ''), reverse=True)
-        
-        return results
-    except Exception as e:
-        logger.error(f"Ошибка при получении истории из БД: {e}")
-        return []
+        # Определяем тип файла
+        if message.content_type == 'photo':
+            file_id = message.photo[-1].file_id
+            file_ext = ".jpg"
+        elif message.content_type == 'document':
+            if message.document.mime_type in ['image/jpeg', 'image/png', 'application/pdf']:
+                file_id = message.document.file_id
+                file_ext = os.path.splitext(message.document.file_name)[1]
+            else:
+                await bot.reply_to(message, "❌ Я принимаю только фото (JPG/PNG) или PDF документы.")
+                return
 
-async def delete_analysis(user_id: str, doc_id: str):
-    """
-    Удаляет конкретный анализ пользователя.
-    """
-    try:
-        app_id = config.STAPLER_APP_ID
-        doc_ref = db.collection("artifacts").document(app_id)\
-                    .collection("users").document(str(user_id))\
-                    .collection("analyses").document(doc_id)
-        
-        # В Firestore подколлекции нужно удалять вручную или через консоль, 
-        # здесь мы удаляем основной документ.
-        doc_ref.delete()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при удалении документа: {e}")
-        return False
+        # Индикация работы
+        processing_msg = await bot.reply_to(message, "🔍 **Начинаю анализ...** Это может занять до 30 секунд.", parse_mode='Markdown')
+        await bot.send_chat_action(message.chat.id, 'upload_document')
+
+        temp_path = f"temp_{user_id}{file_ext}"
+
+        try:
+            # 1. Скачивание файла
+            file_info = await bot.get_file(file_id)
+            downloaded_file = await bot.download_file(file_info.file_path)
+            
+            with open(temp_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+
+            # 2. Анализ через Gemini AI
+            # Передаем путь к файлу в наш парсер
+            analysis_result = await analyze_document(temp_path)
+
+            if not analysis_result:
+                await bot.edit_message_text(
+                    "❌ Не удалось распознать данные. Убедитесь, что фото четкое.",
+                    chat_id=message.chat.id,
+                    message_id=processing_msg.message_id
+                )
+                return
+
+            # 3. Сохранение в Firebase
+            # Добавляем user_id в данные перед сохранением
+            doc_id = await save_analysis_to_db(user_id, analysis_result)
+            
+            # 4. Форматирование ответа
+            final_text = format_analysis_card(analysis_result)
+
+            # 5. Отправка результата
+            await bot.edit_message_text(
+                final_text,
+                chat_id=message.chat.id,
+                message_id=processing_msg.message_id,
+                parse_mode='Markdown'
+            )
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка при обработке: {e}")
+            await bot.edit_message_text(
+                "⚠️ Произошла техническая ошибка. Попробуйте позже.",
+                chat_id=message.chat.id,
+                message_id=processing_msg.message_id
+            )
+        finally:
+            # Удаление временного файла
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    @bot.message_handler(commands=['help'])
+    async def send_help(message):
+        help_text = (
+            "❓ **Как пользоваться Stapler?**\n\n"
+            "1. Отправьте фото бумажного анализа или PDF файл.\n"
+            "2. Подождите около 20 секунд, пока ИИ изучит данные.\n"
+            "3. Получите структурированный отчет и сохранение в архив.\n\n"
+            "💡 **Совет:** Для лучшего распознавания делайте фото при хорошем освещении и без теней."
+        )
+        await bot.reply_to(message, help_text, parse_mode='Markdown')
+
+    logger.info("✅ Обработчики успешно зарегистрированы.")
