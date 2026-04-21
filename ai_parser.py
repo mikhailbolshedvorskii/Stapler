@@ -1,125 +1,64 @@
+import google.generativeai as genai
+import json
+import os
 import logging
-import firebase_admin
-from firebase_admin import credentials, firestore
 from config import config
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-def initialize_firebase():
+# Инициализация Gemini
+genai.configure(api_key=config.GEMINI_API_KEY)
+
+async def analyze_document(file_path):
     """
-    Инициализирует соединение с Firebase.
-    Использует путь к ключу из config.py.
+    Отправляет файл в Gemini AI для извлечения медицинских данных.
     """
     try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(config.FIREBASE_KEY_PATH)
-            firebase_admin.initialize_app(cred)
-        return firestore.client()
+        # Настройка модели
+        model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
+        
+        # Системный промпт для структурирования данных
+        system_prompt = (
+            "Ты — профессиональный медицинский ассистент. Твоя задача: извлечь данные из лабораторного анализа. "
+            "Верни ответ ТОЛЬКО в формате JSON со следующей структурой: "
+            "{"
+            "  'title': 'название анализа',"
+            "  'date': 'дата',"
+            "  'laboratory': 'название клиники',"
+            "  'indicators': ["
+            "    {'name': 'название параметра', 'value': 'значение', 'unit': 'ед. изм.', 'norm': 'референс', 'status': 'normal/high/low/warning'}"
+            "  ],"
+            "  'summary': 'краткое пояснение человеческим языком (макс 2 предложения)'"
+            "}"
+            "Если параметр выше нормы, ставь status: high, если ниже — low. Если в норме — normal."
+        )
+
+        # Загрузка файла (фото или PDF)
+        # Примечание: Gemini поддерживает прямую передачу байтов или файлов
+        with open(file_path, 'rb') as f:
+            image_data = f.read()
+
+        # Формируем запрос
+        # Для простоты используем формат контента с данными
+        mime_type = "application/pdf" if file_path.endswith('.pdf') else "image/jpeg"
+        
+        response = await model.generate_content_async([
+            system_prompt,
+            {'mime_type': mime_type, 'data': image_data}
+        ])
+
+        # Очистка текста от возможных markdown-оберток ```json ... ```
+        text_response = response.text
+        if "```json" in text_response:
+            text_response = text_response.split("```json")[1].split("```")[0].strip()
+        elif "```" in text_response:
+            text_response = text_response.split("```")[1].split("```")[0].strip()
+
+        # Парсим JSON
+        result = json.loads(text_response)
+        return result
+
     except Exception as e:
-        logger.error(f"Критическая ошибка при инициализации Firebase: {e}")
+        logger.error(f"Ошибка при работе с Gemini API: {e}")
         return None
-
-# Глобальный клиент базы данных
-db = initialize_firebase()
-
-async def save_analysis(user_id: str, analysis_data: dict):
-    """
-    Сохраняет оцифрованный анализ в Firestore.
-    
-    Путь: /artifacts/stapler-app/users/{userId}/analyses/{docId}
-    """
-    if not db:
-        logger.error("База данных не инициализирована.")
-        return None
-
-    try:
-        app_id = config.STAPLER_APP_ID
-        # Создаем ссылку на новый документ в основной коллекции анализов пользователя
-        doc_ref = db.collection("artifacts").document(app_id)\
-                    .collection("users").document(str(user_id))\
-                    .collection("analyses").document()
-        
-        # Сохраняем метаданные анализа
-        doc_ref.set({
-            "title": analysis_data.get("title", "Анализ"),
-            "date": analysis_data.get("date"),
-            "laboratory": analysis_data.get("laboratory", "Не указана"),
-            "summary": analysis_data.get("summary", ""),
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "raw_results_count": len(analysis_data.get("parameters", []))
-        })
-
-        # Сохраняем каждый параметр (маркер) в отдельную подколлекцию
-        # Это позволяет в будущем строить графики по конкретному названию маркера
-        for marker in analysis_data.get("parameters", []):
-            marker_ref = doc_ref.collection("markers").document()
-            marker_ref.set({
-                "name": marker.get("name"),
-                "value": marker.get("value"), # Может быть числом или строкой ("отрицательно")
-                "unit": marker.get("unit", ""),
-                "norm": marker.get("norm", ""),
-                "status": marker.get("status", "normal"),
-                "date": analysis_data.get("date") # Дублируем дату для легкого поиска в подколлекциях
-            })
-            
-        logger.info(f"✅ Анализ успешно сохранен. ID: {doc_ref.id}")
-        return doc_ref.id
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении анализа в БД: {e}")
-        return None
-
-async def get_recent_analyses(user_id: str, limit: int = 5):
-    """
-    Загружает последние анализы пользователя.
-    Для каждого анализа также подгружаются все маркеры из подколлекции.
-    """
-    if not db:
-        return []
-
-    try:
-        app_id = config.STAPLER_APP_ID
-        analyses_ref = db.collection("artifacts").document(app_id)\
-                         .collection("users").document(str(user_id))\
-                         .collection("analyses")
-        
-        # Получаем документы. Согласно правилам, сложные фильтры без индексов не используем.
-        # Просто берем последние добавленные (по умолчанию Firestore возвращает по ID или времени создания)
-        docs = analyses_ref.limit(limit).stream()
-        
-        results = []
-        for d in docs:
-            analysis = d.to_dict()
-            analysis['id'] = d.id
-            
-            # Подгружаем маркеры для текущего анализа
-            markers_docs = d.reference.collection("markers").stream()
-            analysis['parameters'] = [m.to_dict() for m in markers_docs]
-            
-            results.append(analysis)
-            
-        # Сортируем в памяти по дате (если даты в формате YYYY-MM-DD)
-        results.sort(key=lambda x: x.get('date', ''), reverse=True)
-        
-        return results
-    except Exception as e:
-        logger.error(f"Ошибка при получении истории из БД: {e}")
-        return []
-
-async def delete_analysis(user_id: str, doc_id: str):
-    """
-    Удаляет конкретный анализ пользователя.
-    """
-    try:
-        app_id = config.STAPLER_APP_ID
-        doc_ref = db.collection("artifacts").document(app_id)\
-                    .collection("users").document(str(user_id))\
-                    .collection("analyses").document(doc_id)
-        
-        # В Firestore подколлекции нужно удалять вручную или через консоль, 
-        # здесь мы удаляем основной документ.
-        doc_ref.delete()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при удалении документа: {e}")
-        return False
