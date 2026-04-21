@@ -1,108 +1,125 @@
-import httpx
-import json
 import logging
-import hashlib
-import asyncio
+import firebase_admin
+from firebase_admin import credentials, firestore
 from config import config
 
+# Настройка логирования
 logger = logging.getLogger(__name__)
 
-# Актуальная модель
-MODEL_NAME = "gemini-3.1-flash-lite-preview" 
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
+def initialize_firebase():
+    """
+    Инициализирует соединение с Firebase.
+    Использует путь к ключу из config.py.
+    """
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(config.FIREBASE_KEY_PATH)
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
+    except Exception as e:
+        logger.error(f"Критическая ошибка при инициализации Firebase: {e}")
+        return None
 
-API_KEY = config.GEMINI_API_KEY
+# Глобальный клиент базы данных
+db = initialize_firebase()
 
-SYSTEM_PROMPT = (
-    "Ты — медицинский ИИ-ассистент Stapler. Твоя роль: извлечение данных из медицинских документов в JSON.\n\n"
-    "ПРАВИЛО ДЛЯ ОПИСАТЕЛЬНЫХ ИССЛЕДОВАНИЙ (РЕНТГЕН, МРТ, УЗИ):\n"
-    "Если в документе нет таблицы с числовыми показателями, поле 'parameters' ДОЛЖНО быть пустым списком [].\n"
-    "Всю важную информацию пиши ТОЛЬКО в поле 'summary'.\n\n"
-    "ФОРМАТ JSON:\n"
-    "{\n"
-    "  'title': 'тип документа',\n"
-    "  'date': 'DD.MM.YYYY',\n"
-    "  'laboratory': 'название учреждения',\n"
-    "  'parameters': [],\n"
-    "  'summary': 'связный текст заключения на русском языке.'\n"
-    "}"
-)
-
-async def make_request_with_retry(url, payload, proxy, max_retries=5):
-    """Выполняет запрос к Gemini API с экспоненциальным бэк-оффом."""
-    delays = [1, 2, 4, 8, 16]
-    transport = httpx.AsyncHTTPTransport(proxy=proxy) if proxy else None
+async def save_analysis(user_id: str, analysis_data: dict):
+    """
+    Сохраняет оцифрованный анализ в Firestore.
     
-    async with httpx.AsyncClient(transport=transport, timeout=90.0) as client:
-        for i in range(max_retries):
-            try:
-                response = await client.post(url, json=payload)
-                if response.status_code == 400:
-                    error_data = response.json()
-                    logger.error(f"API Error 400: {json.dumps(error_data, indent=2)}")
-                    return {"error": f"Bad Request: {error_data.get('error', {}).get('message', 'Unknown')}"}
-                response.raise_for_status()
-                return response.json()
-            except Exception as e:
-                if i == max_retries - 1: raise
-                await asyncio.sleep(delays[i])
-    return None
-
-async def analyze_document(base64_image: str, mime_type: str):
-    """Анализ первичного документа (изображение или PDF)."""
-    if not API_KEY:
-        return {"error": "API_KEY_NOT_FOUND"}
-
-    file_hash = hashlib.sha256(base64_image.encode()).hexdigest()
-    url = f"{API_URL}?key={API_KEY}"
-    
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": "Проанализируй документ. Верни строго JSON."},
-                {"inlineData": {"mimeType": mime_type, "data": base64_image}}
-            ]
-        }],
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1}
-    }
+    Путь: /artifacts/stapler-app/users/{userId}/analyses/{docId}
+    """
+    if not db:
+        logger.error("База данных не инициализирована.")
+        return None
 
     try:
-        raw_result = await make_request_with_retry(url, payload, config.PROXY_URL)
-        if "error" in raw_result: return raw_result
-        text_content = raw_result['candidates'][0]['content']['parts'][0]['text']
-        data = json.loads(text_content)
-        data["file_hash"] = file_hash
-        return data
+        app_id = config.STAPLER_APP_ID
+        # Создаем ссылку на новый документ в основной коллекции анализов пользователя
+        doc_ref = db.collection("artifacts").document(app_id)\
+                    .collection("users").document(str(user_id))\
+                    .collection("analyses").document()
+        
+        # Сохраняем метаданные анализа
+        doc_ref.set({
+            "title": analysis_data.get("title", "Анализ"),
+            "date": analysis_data.get("date"),
+            "laboratory": analysis_data.get("laboratory", "Не указана"),
+            "summary": analysis_data.get("summary", ""),
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "raw_results_count": len(analysis_data.get("parameters", []))
+        })
+
+        # Сохраняем каждый параметр (маркер) в отдельную подколлекцию
+        # Это позволяет в будущем строить графики по конкретному названию маркера
+        for marker in analysis_data.get("parameters", []):
+            marker_ref = doc_ref.collection("markers").document()
+            marker_ref.set({
+                "name": marker.get("name"),
+                "value": marker.get("value"), # Может быть числом или строкой ("отрицательно")
+                "unit": marker.get("unit", ""),
+                "norm": marker.get("norm", ""),
+                "status": marker.get("status", "normal"),
+                "date": analysis_data.get("date") # Дублируем дату для легкого поиска в подколлекциях
+            })
+            
+        logger.info(f"✅ Анализ успешно сохранен. ID: {doc_ref.id}")
+        return doc_ref.id
     except Exception as e:
-        logger.error(f"AI Error: {e}")
-        return {"error": str(e)}
+        logger.error(f"Ошибка при сохранении анализа в БД: {e}")
+        return None
 
-async def analyze_history(history_text: str):
+async def get_recent_analyses(user_id: str, limit: int = 5):
     """
-    Анализ накопленной истории анализов (то, что не хватало).
-    Принимает текстовое представление всех прошлых документов.
+    Загружает последние анализы пользователя.
+    Для каждого анализа также подгружаются все маркеры из подколлекции.
     """
-    if not API_KEY:
-        return "Ошибка: API ключ не настроен."
-
-    url = f"{API_URL}?key={API_KEY}"
-    
-    prompt = (
-        f"Ниже приведена история медицинских анализов пациента:\n\n{history_text}\n\n"
-        "Проанализируй динамику. Выдели значимые изменения, тренды (улучшения или ухудшения) "
-        "и дай общие рекомендации на что обратить внимание. Отвечай на русском языке, кратко и по делу."
-    )
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7}
-    }
+    if not db:
+        return []
 
     try:
-        raw_result = await make_request_with_retry(url, payload, config.PROXY_URL)
-        if "error" in raw_result: return f"Ошибка API: {raw_result['error']}"
-        return raw_result['candidates'][0]['content']['parts'][0]['text']
+        app_id = config.STAPLER_APP_ID
+        analyses_ref = db.collection("artifacts").document(app_id)\
+                         .collection("users").document(str(user_id))\
+                         .collection("analyses")
+        
+        # Получаем документы. Согласно правилам, сложные фильтры без индексов не используем.
+        # Просто берем последние добавленные (по умолчанию Firestore возвращает по ID или времени создания)
+        docs = analyses_ref.limit(limit).stream()
+        
+        results = []
+        for d in docs:
+            analysis = d.to_dict()
+            analysis['id'] = d.id
+            
+            # Подгружаем маркеры для текущего анализа
+            markers_docs = d.reference.collection("markers").stream()
+            analysis['parameters'] = [m.to_dict() for m in markers_docs]
+            
+            results.append(analysis)
+            
+        # Сортируем в памяти по дате (если даты в формате YYYY-MM-DD)
+        results.sort(key=lambda x: x.get('date', ''), reverse=True)
+        
+        return results
     except Exception as e:
-        logger.error(f"History Analysis Error: {e}")
-        return "Не удалось проанализировать историю анализов."
+        logger.error(f"Ошибка при получении истории из БД: {e}")
+        return []
+
+async def delete_analysis(user_id: str, doc_id: str):
+    """
+    Удаляет конкретный анализ пользователя.
+    """
+    try:
+        app_id = config.STAPLER_APP_ID
+        doc_ref = db.collection("artifacts").document(app_id)\
+                    .collection("users").document(str(user_id))\
+                    .collection("analyses").document(doc_id)
+        
+        # В Firestore подколлекции нужно удалять вручную или через консоль, 
+        # здесь мы удаляем основной документ.
+        doc_ref.delete()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении документа: {e}")
+        return False
