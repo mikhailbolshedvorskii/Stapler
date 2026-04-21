@@ -7,34 +7,32 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# Настройки модели
-MODEL_NAME = "gemini-2.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash-Lite"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
 API_KEY = config.GEMINI_API_KEY
 
-# Улучшенный системный промпт с логикой интерпретации медицинских норм
+# Обновленный системный промпт с защитой от "лишних" строк
 SYSTEM_PROMPT = (
-    "Ты — профессиональный медицинский лабораторный ассистент Stapler. "
-    "Твоя задача: провести OCR документа и извлечь данные в строгий JSON.\n\n"
+    "Ты — профессиональный медицинский ассистент Stapler. Твоя задача: оцифровать документ в JSON.\n\n"
+    "ПРАВИЛА ИЗВЛЕЧЕНИЯ:\n"
+    "1. ОПРЕДЕЛЕНИЕ ТИПА: Если это текстовое описание (рентген, УЗИ, МРТ), поле 'parameters' ОБЯЗАТЕЛЬНО должно быть пустым списком [].\n"
+    "2. КОЛИЧЕСТВЕННЫЕ ДАННЫЕ: Только если в документе есть таблица с анализами (кровь, моча и т.д.), заполняй 'parameters'.\n"
+    "3. ЗАЩИТА ОТ МУСОРА: Не выдумывай параметры из предложений в описании. Если сомневаешься — не добавляй в 'parameters'.\n\n"
     "ПРАВИЛА ИНТЕРПРЕТАЦИИ НОРМ:\n"
-    "1. Если в графе 'Норма' стоит '< X' (например, < 1.2), то любой результат меньше X является НОРМАЛЬНЫМ (status: 'normal').\n"
-    "2. Если результат равен 1, а норма < 1.2 — это статус 'normal', а не 'low'.\n"
-    "3. Если результат в титрах совпадает с порогом (например, <1:40 и норма <1:40) — это 'normal'.\n"
-    "4. Статус 'high' или 'low' ставится только если результат ВЫХОДИТ за пределы указанного диапазона или порога.\n\n"
-    "ВАЖНО: Твое текстовое заключение (summary) должно СТРОГО соответствовать статусам (status) в параметрах. "
-    "Если параметр 'normal', в summary нельзя писать, что он выше или ниже нормы.\n\n"
+    "1. Если результат внутри диапазона или совпадает с порогом (напр. результат 1, норма < 1.2) — status: 'normal'.\n"
+    "2. 'high' или 'low' только при явном выходе за границы.\n\n"
     "ФОРМАТ ОТВЕТА (JSON):\n"
     "{\n"
-    "  'title': 'тип анализа',\n"
+    "  'title': 'тип анализа (напр. Рентгенография стоп)',\n"
     "  'date': 'DD.MM.YYYY',\n"
     "  'laboratory': 'название клиники',\n"
     "  'parameters': [\n"
     "    { 'name': 'название', 'value': 'число', 'unit': 'ед.изм', 'norm': 'референс', 'status': 'normal/high/low' }\n"
     "  ],\n"
-    "  'summary': 'краткое мед. заключение на русском (1-2 предложения).'\n"
+    "  'summary': 'краткое и понятное заключение на русском (2-3 предложения). Для рентгена опиши суть здесь.'\n"
     "}\n"
-    "Если поле не найдено, используй 'Не указано'. Не используй null."
+    "Используй 'Не указано' вместо пустых полей, но для 'parameters' используй пустой массив [], если это не табличный анализ."
 )
 
 HISTORY_SYSTEM_PROMPT = (
@@ -71,13 +69,14 @@ async def analyze_document(base64_image: str, mime_type: str):
     payload = {
         "contents": [{
             "parts": [
-                {"text": "Извлеки данные и проведи мед. анализ. Убедись, что 'summary' не противоречит 'status'."},
+                {"text": "Извлеки данные строго по инструкции. Если это рентген или описание — оставь parameters пустым, всё пиши в summary."},
                 {"inlineData": {"mimeType": mime_type, "data": base64_image}}
             ]
         }],
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "generationConfig": {
-            "responseMimeType": "application/json"
+            "responseMimeType": "application/json",
+            "temperature": 0.1  # Низкая температура для уменьшения галлюцинаций
         }
     }
 
@@ -90,6 +89,14 @@ async def analyze_document(base64_image: str, mime_type: str):
 
         text_content = raw_result['candidates'][0]['content']['parts'][0]['text']
         data = json.loads(text_content)
+        
+        # Финальная чистка: если ИИ всё же засунул мусор в параметры (напр. 'Не указано')
+        if "parameters" in data and isinstance(data["parameters"], list):
+            data["parameters"] = [
+                p for p in data["parameters"] 
+                if p.get("name") != "Не указано" and p.get("value") != "Не указано"
+            ]
+            
         data["file_hash"] = file_hash
         return data
     except Exception as e:
