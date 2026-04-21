@@ -1,132 +1,67 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
 import logging
-import os
-from datetime import datetime
+from firebase_admin import firestore
+from config import config
 
-# Настройка локального логгера
-logger = logging.getLogger(__name__)
-
-# Путь к ключу (файл должен быть в корне проекта)
-CONF_PATH = os.path.join(os.getcwd(), 'firebase_key.json')
-
-# Единый идентификатор приложения для всей экосистемы Stapler
-APP_ID = "stapler-app"
-
-def initialize_firebase():
-    """Явная функция инициализации Firebase Admin SDK"""
-    try:
-        if not firebase_admin._apps:
-            if os.path.exists(CONF_PATH):
-                cred = credentials.Certificate(CONF_PATH)
-                firebase_admin.initialize_app(cred)
-                print(f"✅ [STAPLER DB] Успешный вход. Используем APP_ID: {APP_ID}")
-                return firestore.client()
-            else:
-                print(f"❌ [STAPLER DB] Файл ключа не найден: {CONF_PATH}")
-                return None
-        return firestore.client()
-    except Exception as e:
-        print(f"❌ [STAPLER DB] Ошибка инициализации: {e}")
-        return None
-
-# Инициализируем БД при импорте модуля
-db = initialize_firebase()
-
-async def is_duplicate_analysis(user_id: str, file_hash: str) -> bool:
-    """Проверяет наличие анализа с таким же хешем в базе Stapler."""
-    if not db or not file_hash:
-        return False
-    try:
-        # Путь: /artifacts/stapler-app/users/{user_id}/analyses
-        user_analyses_ref = db.collection('artifacts', APP_ID, 'users', str(user_id), 'analyses')
-        
-        # RULE 2: Простой запрос по полю file_hash
-        query = user_analyses_ref.where("file_hash", "==", file_hash).limit(1)
-        docs = query.get()
-        return len(docs) > 0
-    except Exception as e:
-        logger.error(f"Ошибка при проверке дубликатов: {e}")
-        return False
-
-async def save_medical_analysis(user_id: str, data: dict):
-    """
-    Сохранение оцифрованных данных в Firestore.
-    Возвращает True, False или "duplicate".
-    """
-    global db
-    if db is None:
-        db = initialize_firebase()
-        if db is None:
-            logger.error("Критическая ошибка: База данных недоступна.")
-            return False
-
-    file_hash = data.get("file_hash")
-    
-    # Защита от повторной загрузки того же файла
-    if await is_duplicate_analysis(user_id, file_hash):
-        print(f"⚠️ [STAPLER DB] Файл уже существует для пользователя {user_id}. Пропуск.")
-        return "duplicate"
-
-    print(f"⏳ [STAPLER DB] Запись данных в облако для пользователя {user_id}...")
-
-    try:
-        # Основная коллекция анализов
-        user_analyses_ref = db.collection('artifacts', APP_ID, 'users', str(user_id), 'analyses')
-        
-        analysis_doc = {
-            "title": data.get("title", "Документ Stapler"),
-            "date": data.get("date", datetime.now().strftime("%d.%m.%Y")),
-            "laboratory": data.get("laboratory", "Не указана"),
-            "summary": data.get("summary", ""),
-            "file_hash": file_hash,
-            "created_at": firestore.SERVER_TIMESTAMP
-        }
-        
-        # Создаем документ анализа
-        new_doc_ref = user_analyses_ref.document()
-        new_doc_ref.set(analysis_doc)
-        
-        # Сохраняем конкретные параметры в подколлекцию 'markers' для графиков
-        markers_ref = new_doc_ref.collection('markers')
-        parameters = data.get("parameters", [])
-        
-        for param in parameters:
-            marker_data = {
-                "name": param.get("name"),
-                "value": param.get("value"),
-                "unit": param.get("unit"),
-                "norm": param.get("norm"),
-                "status": param.get("status"),
-                "date": analysis_doc["date"]
-            }
-            markers_ref.add(marker_data)
-            
-        print(f"✅ [STAPLER DB] Данные успешно сохранены (ID: {new_doc_ref.id})")
-        return True
-
-    except Exception as e:
-        print(f"❌ [STAPLER DB] Ошибка записи: {e}")
-        return False
+# Инициализация клиента (предполагаем, что initialize_firebase уже вызван в main.py)
+db = firestore.client()
 
 async def get_recent_analyses(user_id: str, limit: int = 5):
-    """Загрузка истории из облака Stapler для команды /history"""
-    if db is None: return []
+    """
+    Получает последние анализы пользователя из Firestore.
+    """
     try:
-        query = db.collection('artifacts', APP_ID, 'users', str(user_id), 'analyses')\
-                  .order_by("created_at", direction=firestore.Query.DESCENDING)\
-                  .limit(limit)
+        # Используем путь из архитектуры: /artifacts/stapler-app/users/{userId}/analyses
+        analyses_ref = db.collection("artifacts").document(config.STAPLER_APP_ID)\
+                         .collection("users").document(user_id)\
+                         .collection("analyses")
         
-        docs = query.stream()
+        # ВАЖНО: Согласно RULE 2, мы не используем orderBy в сложных запросах без индексов,
+        # но для простого получения документов это допустимо, если индекс создан.
+        # Если индекса нет, просто берем последние документы.
+        docs = analyses_ref.limit(limit).stream()
+        
         results = []
-        for doc in docs:
-            analysis = doc.to_dict()
-            analysis['id'] = doc.id
-            # Достаем маркеры для отображения деталей в истории
-            markers = doc.reference.collection('markers').stream()
-            analysis['parameters'] = [m.to_dict() for m in markers]
-            results.append(analysis)
+        for d in docs:
+            data = d.to_dict()
+            data['id'] = d.id
+            
+            # Загружаем маркеры для каждого анализа
+            markers = d.reference.collection("markers").stream()
+            data['parameters'] = [m.to_dict() for m in markers]
+            
+            results.append(data)
+        
         return results
     except Exception as e:
-        logger.error(f"Ошибка получения истории Stapler: {e}")
+        logging.error(f"Ошибка при получении истории: {e}")
         return []
+
+async def save_analysis(user_id, analysis_data):
+    """
+    Сохраняет данные анализа, поддерживая и числа, и строки в поле value.
+    """
+    app_id = config.STAPLER_APP_ID
+    doc_ref = db.collection("artifacts").document(app_id)\
+                .collection("users").document(user_id)\
+                .collection("analyses").document()
+    
+    doc_ref.set({
+        "title": analysis_data.get("title"),
+        "date": analysis_data.get("date"),
+        "laboratory": analysis_data.get("laboratory"),
+        "summary": analysis_data.get("summary"),
+        "created_at": firestore.SERVER_TIMESTAMP
+    })
+
+    for marker in analysis_data.get("parameters", []):
+        m_ref = doc_ref.collection("markers").document()
+        # Сохраняем значение 'as is' (число или строка)
+        m_ref.set({
+            "name": marker.get("name"),
+            "value": marker.get("value"), 
+            "unit": marker.get("unit", ""),
+            "norm": marker.get("norm", ""),
+            "status": marker.get("status", "normal"),
+            "date": analysis_data.get("date")
+        })
+    return doc_ref.id
