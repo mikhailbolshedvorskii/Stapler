@@ -18,7 +18,8 @@ class Config:
     
     # Настройки базы данных (Firestore)
     FIREBASE_KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase_key.json")
-    
+    FIREBASE_PROJECT_ID = "stapler-project"
+
     # Настройки Proxy (важно для обхода блокировок)
     # Добавляем PROXY_URL, так как main.py обращается к нему напрямую
     PROXY_URL = os.getenv("PROXY_URL")
