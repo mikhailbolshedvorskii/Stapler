@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 logger = logging.getLogger(__name__)
 
 # Параметры модели ИИ
-MODEL_NAME = "gemini-2.5-flash-lite"
+MODEL_NAME = "gemini-3.1-flash-lite-preview"
 API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 # Системный промпт для формирования глубокого медицинского отчета
