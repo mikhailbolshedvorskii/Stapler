@@ -27,31 +27,92 @@ class AnalysisStates(StatesGroup):
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "👋 <b>Здравствуйте! Я Stapler.</b>\n\n"
-        "Я помогу вам вести медкарту и анализировать тренды.\n\n"
-        "🔹 <b>Загрузка:</b> Пришлите фото или PDF результата анализа.\n"
-        "🔹 <b>Чат:</b> Спрашивайте меня о своих данных (например: 'Как изменилось железо за год?').",
+        "👋 <b>Привет! Я Stapler.</b>\n\n"
+        "Я твой медицинский ассистент. Вот что я умею:\n\n"
+        "📥 <b>Загрузка:</b> Пришли фото или PDF анализа.\n"
+        "📊 <b>Аналитика:</b> Используй команду /analysis для вывода трендов.\n"
+        "💬 <b>Чат:</b> Просто задай вопрос по своим данным.",
         parse_mode="HTML"
     )
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
+    # Показываем последние 10 записей (кратко)
     history = await get_recent_analyses(message.from_user.id, limit=10)
     if not history:
         await message.answer("У вас пока нет сохраненных анализов.")
         return
     
-    text = "📅 <b>Ваша история:</b>\n\n"
+    text = "📅 <b>Ваша история загрузок:</b>\n\n"
     for item in history:
         text += f"• {item.get('date')} — <b>{item.get('title')}</b>\n"
     
     await message.answer(text, parse_mode="HTML")
 
-# --- БЛОК 2: ОБРАБОТКА ФАЙЛОВ ---
+@router.message(Command("analysis"))
+async def cmd_analysis(message: Message):
+    """
+    UI/UX: Вместо ввода текста предлагаем кнопки выбора периода.
+    """
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🗓 Месяц", callback_data="period_30"),
+            InlineKeyboardButton(text="🗓 3 Месяца", callback_data="period_90")
+        ],
+        [
+            InlineKeyboardButton(text="🗓 Полгода", callback_data="period_180"),
+            InlineKeyboardButton(text="🗓 Год", callback_data="period_365")
+        ],
+        [
+            InlineKeyboardButton(text="📈 Вся история", callback_data="period_3650")
+        ]
+    ])
+    
+    await message.answer(
+        "📊 <b>Анализ динамики</b>\n\nЗа какой период Stapler должен проанализировать ваши показатели?",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+# --- БЛОК 2: ОБРАБОТКА CALLBACK (КНОПКИ) ---
+
+@router.callback_query(F.data.startswith("period_"))
+async def process_period_analysis(callback: CallbackQuery):
+    days = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    
+    await callback.message.edit_text(f"⌛ <b>Собираю данные за {days} дн. и анализирую...</b>", parse_mode="HTML")
+    
+    # 1. Получаем данные из БД с фильтром по дням
+    history = await get_recent_analyses(user_id, limit=50, days=days)
+    
+    if not history:
+        await callback.message.edit_text("❌ За этот период данных не найдено.")
+        return
+
+    # 2. Формируем запрос к ИИ
+    query = f"Проведи глубокий анализ моих данных за последние {days} дней. Какие тренды ты видишь? Есть ли повод для беспокойства?"
+    
+    try:
+        answer = await ask_medical_ai(query, history)
+        # Добавляем кнопку возврата в меню
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад к выбору периода", callback_data="back_to_analysis")]
+        ])
+        await callback.message.edit_text(answer, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка анализа периода: {e}")
+        await callback.message.edit_text("💥 Ошибка при формировании отчета.")
+
+@router.callback_query(F.data == "back_to_analysis")
+async def back_to_analysis(callback: CallbackQuery):
+    await cmd_analysis(callback.message)
+
+# --- БЛОК 3: ЗАГРУЗКА ФАЙЛОВ ---
 
 @router.message(F.document | F.photo)
 async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
-    status_msg = await message.answer("🔍 <b>Анализирую документ...</b>\nЭто займет около 10-15 секунд.", parse_mode="HTML")
+    status_msg = await message.answer("🔍 <b>Stapler изучает документ...</b>", parse_mode="HTML")
     
     file_path = None
     try:
@@ -71,30 +132,25 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         analysis_results = await analyze_document(file_path)
         
         if not analysis_results or "indicators" not in analysis_results:
-            await status_msg.edit_text("❌ Не удалось распознать данные. Попробуйте другое фото.")
+            await status_msg.edit_text("❌ Не удалось распознать данные. Проверьте четкость фото.")
             return
 
         await state.update_data(temp_analysis=analysis_results)
         await state.set_state(AnalysisStates.confirming_save)
 
         preview = (
-            f"✅ <b>Анализ распознан!</b>\n\n"
-            f"📋 <b>Тип:</b> {analysis_results.get('title')}\n"
-            f"🏢 <b>Лаборатория:</b> {analysis_results.get('laboratory', 'н/д')}\n\n"
-            f"<b>Основные показатели:</b>\n"
+            f"✅ <b>Документ распознан!</b>\n\n"
+            f"📋 <b>Тип:</b> {analysis_results.get('title')}\n\n"
+            f"<b>Ключевые показатели:</b>\n"
         )
         
-        indicators = analysis_results.get('indicators', [])
-        for ind in indicators[:5]:
-            status_emoji = "🟢" if ind.get('status') == 'normal' else "🔴"
-            preview += f"{status_emoji} {ind['name']}: {ind['value']} {ind.get('unit', '')}\n"
-        
-        if len(indicators) > 5:
-            preview += f"<i>...и еще {len(indicators) - 5} параметров.</i>\n"
+        for ind in analysis_results.get('indicators', [])[:5]:
+            status = "🟢" if ind.get('status') == 'normal' else "🔴"
+            preview += f"{status} {ind['name']}: {ind['value']} {ind.get('unit', '')}\n"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💾 Сохранить в профиль", callback_data="save_to_db"),
+                InlineKeyboardButton(text="💾 Сохранить", callback_data="save_to_db"),
                 InlineKeyboardButton(text="🗑 Удалить", callback_data="discard_analysis")
             ]
         ])
@@ -103,8 +159,8 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         await message.answer(preview, reply_markup=keyboard, parse_mode="HTML")
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке файла: {e}")
-        await status_msg.edit_text("💥 Произошла ошибка при обработке файла.")
+        logger.error(f"Ошибка файла: {e}")
+        await status_msg.edit_text("💥 Ошибка при чтении файла.")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -112,36 +168,26 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "save_to_db", AnalysisStates.confirming_save)
 async def process_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    analysis = data.get("temp_analysis")
-    
-    success = await save_analysis_to_db(callback.from_user.id, analysis)
+    success = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"))
     if success:
-        await callback.message.edit_text("✅ <b>Данные сохранены в Stapler!</b> Теперь вы можете задавать вопросы по ним.", parse_mode="HTML")
-    else:
-        await callback.answer("Ошибка при сохранении в базу.", show_alert=True)
+        await callback.message.edit_text("✅ <b>Данные в базе Stapler!</b>")
     await state.clear()
 
 @router.callback_query(F.data == "discard_analysis", AnalysisStates.confirming_save)
 async def process_discard(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("🗑 Данные удалены.")
+    await callback.message.edit_text("🗑 Удалено.")
 
-# --- БЛОК 3: ЧАТ С ИСТОРИЕЙ ---
+# --- БЛОК 4: СВОБОДНЫЙ ЧАТ ---
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_user_query(message: Message):
-    user_id = message.from_user.id
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
-    history = await get_recent_analyses(user_id, limit=10)
+    history = await get_recent_analyses(message.from_user.id, limit=10)
     
     if not history:
-        await message.answer("Чтобы я мог отвечать на вопросы, сначала загрузите свои анализы (фото или PDF).")
+        await message.answer("Сначала загрузи анализ, чтобы мне было на что опираться.")
         return
 
-    try:
-        answer = await ask_medical_ai(message.text, history)
-        await message.answer(answer, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Ошибка QA: {e}")
-        await message.answer("Простите, я не смог проанализировать ваши данные сейчас. Попробуйте позже.")
+    answer = await ask_medical_ai(message.text, history)
+    await message.answer(answer, parse_mode="Markdown")
