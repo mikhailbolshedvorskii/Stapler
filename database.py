@@ -1,19 +1,18 @@
 import logging
+import asyncio
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import config
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-# Глобальная переменная для клиента, чтобы не инициализировать каждый раз
+# Глобальная переменная для клиента
 _db_client = None
 
 def initialize_firebase():
-    """
-    Инициализирует подключение к Firebase Firestore.
-    """
+    """Инициализирует подключение к Firebase Firestore."""
     global _db_client
     try:
         if not firebase_admin._apps:
@@ -28,89 +27,103 @@ def initialize_firebase():
         return None
 
 def get_db():
-    """Возвращает клиента Firestore, инициализируя его при необходимости."""
+    """Возвращает клиента Firestore."""
     global _db_client
     if _db_client is None:
         return initialize_firebase()
     return _db_client
 
 async def save_analysis_to_db(user_id, analysis_data: dict):
-    """
-    Сохраняет результат анализа в Firestore.
-    """
+    """Асинхронная обертка для сохранения анализа."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _sync_save_analysis, user_id, analysis_data)
+
+def _sync_save_analysis(user_id, analysis_data: dict):
+    """Синхронная логика сохранения в базу."""
     try:
         db = get_db()
-        if not db:
-            logger.error("❌ Клиент базы данных не инициализирован.")
-            return False
+        if not db: return None
             
-        # Теперь config.STAPLER_APP_ID существует
         app_id = config.STAPLER_APP_ID
         user_id_str = str(user_id)
         
-        # Ссылка на основной документ анализа
+        # Основной документ анализа
         analysis_ref = db.collection('artifacts').document(app_id) \
                          .collection('users').document(user_id_str) \
                          .collection('analyses').document()
 
-        # Подготовка данных
         main_data = {
             "title": analysis_data.get('title', 'Медицинский анализ'),
             "date": analysis_data.get('date', datetime.now().strftime("%Y-%m-%d")),
             "laboratory": analysis_data.get('laboratory', 'Неизвестная лаборатория'),
             "summary": analysis_data.get('summary', ''),
-            "created_at": firestore.SERVER_TIMESTAMP
+            "created_at": firestore.SERVER_TIMESTAMP # Важно для фильтрации по времени
         }
 
-        # Сохраняем основной документ
         analysis_ref.set(main_data)
 
-        # Сохраняем показатели (маркеры) в подколлекцию
-        markers = analysis_data.get('indicators', []) or analysis_data.get('parameters', [])
+        # Сохранение маркеров (показателей)
+        markers = analysis_data.get('indicators') or analysis_data.get('parameters') or []
         if markers:
             batch = db.batch()
             for marker in markers:
                 marker_ref = analysis_ref.collection('markers').document()
-                marker_data = {
+                batch.set(marker_ref, {
                     "name": marker.get('name', 'Неизвестно'),
                     "value": str(marker.get('value', '')),
                     "unit": marker.get('unit', ''),
                     "norm": marker.get('norm', ''),
                     "status": marker.get('status', 'normal'),
                     "date": main_data['date']
-                }
-                batch.set(marker_ref, marker_data)
+                })
             batch.commit()
             
-        logger.info(f"✅ Анализ {analysis_ref.id} успешно сохранен в Firestore для пользователя {user_id}")
+        logger.info(f"✅ Анализ сохранен в Stapler для {user_id}")
         return analysis_ref.id
     except Exception as e:
-        logger.error(f"❌ Ошибка при сохранении в Firestore: {e}")
+        logger.error(f"❌ Ошибка Firestore при сохранении: {e}")
         return None
 
-async def get_recent_analyses(user_id, limit: int = 5):
+async def get_recent_analyses(user_id, limit: int = 5, days: int = None):
     """
-    Получает историю анализов пользователя.
+    Получает историю анализов. 
+    Если указан 'days', фильтрует за последние X дней.
     """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _sync_get_analyses, user_id, limit, days)
+
+def _sync_get_analyses(user_id, limit, days):
+    """Синхронная логика получения данных."""
     try:
         db = get_db()
-        if not db:
-            return []
+        if not db: return []
             
-        app_id = config.STAPLER_APP_ID
-        user_id_str = str(user_id)
+        user_ref = db.collection('artifacts').document(config.STAPLER_APP_ID) \
+                     .collection('users').document(str(user_id)) \
+                     .collection('analyses')
 
-        analyses_ref = db.collection('artifacts').document(app_id) \
-                         .collection('users').document(user_id_str) \
-                         .collection('analyses')
+        # Базовый запрос с сортировкой по дате создания
+        query = user_ref.order_by("created_at", direction=firestore.Query.DESCENDING)
 
-        query = analyses_ref.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+        # Фильтр по периоду (для команды /analysis)
+        if days:
+            start_date = datetime.now() - timedelta(days=days)
+            query = query.where("created_at", ">=", start_date)
+
+        # Лимит документов
+        if limit:
+            query = query.limit(limit)
+
         docs = query.stream()
-
         history = []
         for doc in docs:
             data = doc.to_dict()
             data['id'] = doc.id
+            
+            # Подгружаем маркеры для каждого анализа, чтобы ИИ видел цифры
+            markers_docs = doc.reference.collection('markers').stream()
+            data['indicators'] = [m.to_dict() for m in markers_docs]
+            
             history.append(data)
             
         return history
