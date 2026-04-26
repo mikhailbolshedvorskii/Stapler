@@ -1,6 +1,6 @@
- # 🏥 Second Opinion — AI Medical Assistant
+ # 🏥 Stapler — AI Medical Assistant
 
-Second Opinion is an intelligent assistant that transforms the chaos of medical paperwork into a structured knowledge base. It digitizes lab results, identifies patterns, and helps users monitor their health without needing a medical dictionary.
+Stapler is an intelligent assistant that transforms the chaos of medical paperwork into a structured knowledge base. It digitizes lab results, identifies patterns, and helps users monitor their health without needing a medical dictionary.
 
 > **The philosophy is simple: you shouldn't manage your data — your data should work for you**
 
@@ -47,7 +47,7 @@ Second Opinion is an intelligent assistant that transforms the chaos of medical 
 
 # 🧠 Vision
 
-The long-term goal of Second Opinion is to evolve into a private ecosystem that:
+The long-term goal of Stapler is to evolve into a private ecosystem that:
 
 - Automatically collects data from emails and messaging apps.
 
@@ -56,7 +56,7 @@ The long-term goal of Second Opinion is to evolve into a private ecosystem that:
 - Ensures medical data transparency: the simplicity of a folder, the accuracy of a table, and the power of AI.
 
 
-# 📂 Project Structure (Core)
+# 📂 Project Structure (Core) (это надо доработать)
 
 ``` stapler_project/
 ├── main.py             # Entry point and bot lifecycle

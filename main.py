@@ -1,79 +1,70 @@
-import os
-import logging
 import asyncio
-from telebot.async_telebot import AsyncTeleBot
+import logging
+import sys
 
-# Импортируем конфигурацию и модули системы
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperty
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+
 from config import config
-from handlers import run_bot
-import ai_parser 
+from handlers import router as main_router
 import database
 
 # Настройка логирования
 logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
 async def main():
     """
-    Главная точка входа в приложение Stapler.
+    Основная функция запуска бота Stapler Health на aiogram 3.
     """
-    # 1. Валидация конфигурации
+    logger.info("--- Запуск Stapler Health AI (aiogram) ---")
+
+    # 1. Проверка конфигурации
     try:
         config.validate()
-    except EnvironmentError as e:
+    except Exception as e:
         logger.critical(f"Ошибка конфигурации: {e}")
         return
 
-    # 2. Инициализация ИИ (API ключи и настройки)
-    ai_parser.API_KEY = config.GEMINI_API_KEY
+    # 2. Инициализация БД Firestore
+    db = database.initialize_firebase()
+    if not db:
+        logger.error("Не удалось подключить Firebase. Бот может работать некорректно.")
+
+    # 3. Инициализация бота и диспетчера
+    # Используем DefaultBotProperty для указания ParseMode по умолчанию
+    bot = Bot(
+        token=config.TELEGRAM_TOKEN,
+        default=DefaultBotProperty(parse_mode=ParseMode.HTML)
+    )
     
-    # 3. Подключение к базе данных Firestore
-    # Прокси для Firebase настраивается через системные переменные или Admin SDK,
-    # поэтому здесь мы просто инициализируем клиент.
-    db_client = database.initialize_firebase()
-    if db_client:
-        logger.info("✅ База данных Firestore подключена.")
-    else:
-        logger.warning("⚠️ Работа без базы данных (проверьте файл firebase_key.json)")
+    # Хранилище состояний в оперативной памяти (для FSM)
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
-    # 4. Инициализация бота
-    # ВАЖНО: Мы НЕ используем asyncio_helper.proxy здесь, так как Telegram 
-    # должен работать напрямую без прокси, чтобы избежать ServerDisconnectedError.
-    bot = AsyncTeleBot(config.TELEGRAM_TOKEN)
+    # 4. Регистрация роутеров (хендлеров)
+    dp.include_router(main_router)
 
-    # Установка команд бота в меню
+    # Полезная функция: удаление вебхуков перед запуском поллинга
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    # 5. Запуск бота
     try:
-        from telebot.types import BotCommand
-        await bot.set_my_commands([
-            BotCommand("start", "Запустить бота"),
-            BotCommand("history", "Показать историю анализов"),
-            BotCommand("help", "Инструкция по использованию")
-        ])
-        logger.info("✅ Команды меню установлены.")
+        logger.info("🚀 Бот запущен и готов принимать документы!")
+        await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"⚠️ Не удалось установить команды меню: {e}")
-
-    logger.info("🚀 Запуск бота Stapler...")
-    
-    # Регистрация хендлеров (обработчиков сообщений) из handlers.py
-    await run_bot(bot)
-    
-    try:
-        # Запуск бесконечного цикла получения обновлений (polling)
-        # timeout и request_timeout увеличены для стабильности на слабых каналах
-        await bot.polling(non_stop=True, timeout=90, request_timeout=150)
-    except Exception as e:
-        logger.error(f"❌ Ошибка во время работы Polling: {e}")
-        # Короткая пауза перед перезапуском при сбое сети
-        await asyncio.sleep(5) 
+        logger.error(f"Критическая ошибка при работе бота: {e}")
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("👋 Бот остановлен пользователем (KeyboardInterrupt).")
-    except Exception as e:
-        logger.error(f"💥 Критическая ошибка при запуске: {e}")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен.")

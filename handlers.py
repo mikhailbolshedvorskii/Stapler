@@ -1,134 +1,109 @@
-import os
+import json
 import logging
-import asyncio
-from telebot import types
-from ai_parser import analyze_document
-from database import save_analysis_to_db, get_recent_analyses
-from formatters import format_analysis_card
-from config import config
+from aiogram import Router, F, types
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Импорты твоих модулей
+from database import save_analysis_to_db  # Твоя функция записи в Firestore
+from ai_parser import analyze_document      # Твоя функция вызова Gemini
 
-async def run_bot(bot):
+router = Router()
+
+# 1. Определяем состояния для процесса анализа
+class AnalysisStates(StatesGroup):
+    confirming_save = State()  # Ожидание нажатия кнопки "Сохранить"
+
+@router.message(F.document | F.photo)
+async def handle_medical_file(message: types.Message, state: FSMContext):
     """
-    Регистрация всех обработчиков сообщений.
+    Шаг 1: Получаем файл, анализируем через ИИ, но НЕ сохраняем в БД.
+    Вместо этого кладем данные в кэш состояния (FSM).
     """
-
-    @bot.message_handler(commands=['start'])
-    async def send_welcome(message):
-        welcome_text = (
-            "👋 Привет! Я **Stapler** — твой интеллектуальный архив анализов.\n\n"
-            "📸 Просто пришли мне фото или PDF с результатами исследований, "
-            "и я расшифрую их, сохраню в базу и покажу динамику.\n\n"
-            "Используй /history, чтобы увидеть свои прошлые записи."
-        )
-        await bot.reply_to(message, welcome_text, parse_mode='Markdown')
-
-    @bot.message_handler(commands=['history'])
-    async def show_history(message):
-        user_id = str(message.from_user.id)
-        await bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = await message.answer("🔍 <b>Анализирую документ...</b>\nЭто займет около 10-15 секунд.", parse_mode="HTML")
+    
+    try:
+        # Здесь логика получения файла и вызова твоего ai_parser
+        # Предположим, analyze_document возвращает готовый словарь (dict)
+        analysis_results = await analyze_document(message)
         
-        try:
-            history = await get_recent_analyses(user_id, limit=5)
-            if not history:
-                await bot.reply_to(message, "Ваш архив пока пуст. Загрузите первый анализ!")
-                return
+        if not analysis_results or "parameters" not in analysis_results:
+            await status_msg.edit_text("❌ Не удалось распознать данные. Пожалуйста, убедитесь, что фото четкое.")
+            return
 
-            response = "📂 **Последние анализы из вашего архива:**\n\n"
-            for item in history:
-                response += f"🔹 {item.get('date', '??')} — {item.get('title', 'Анализ')}\n"
-            
-            response += "\n_Чтобы получить подробности, просто загрузите новый файл._"
-            await bot.reply_to(message, response, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"Ошибка при получении истории: {e}")
-            await bot.reply_to(message, "❌ Не удалось загрузить историю.")
+        # 2. СОХРАНЯЕМ ВО ВРЕМЕННЫЙ КЭШ
+        # Данные будут жить, пока пользователь не нажмет кнопку или не сбросит состояние
+        await state.update_data(temp_analysis=analysis_results)
+        await state.set_state(AnalysisStates.confirming_save)
 
-    @bot.message_handler(content_types=['photo', 'document'])
-    async def handle_docs(message):
-        """
-        Обработка входящих файлов (фотографий или PDF).
-        """
-        user_id = str(message.from_user.id)
-        file_id = None
-        file_ext = ""
-
-        # Определяем тип файла
-        if message.content_type == 'photo':
-            file_id = message.photo[-1].file_id
-            file_ext = ".jpg"
-        elif message.content_type == 'document':
-            if message.document.mime_type in ['image/jpeg', 'image/png', 'application/pdf']:
-                file_id = message.document.file_id
-                file_ext = os.path.splitext(message.document.file_name)[1]
-            else:
-                await bot.reply_to(message, "❌ Я принимаю только фото (JPG/PNG) или PDF документы.")
-                return
-
-        # Индикация работы
-        processing_msg = await bot.reply_to(message, "🔍 **Начинаю анализ...** Это может занять до 30 секунд.", parse_mode='Markdown')
-        await bot.send_chat_action(message.chat.id, 'upload_document')
-
-        temp_path = f"temp_{user_id}{file_ext}"
-
-        try:
-            # 1. Скачивание файла
-            file_info = await bot.get_file(file_id)
-            downloaded_file = await bot.download_file(file_info.file_path)
-            
-            with open(temp_path, 'wb') as new_file:
-                new_file.write(downloaded_file)
-
-            # 2. Анализ через Gemini AI
-            # Передаем путь к файлу в наш парсер
-            analysis_result = await analyze_document(temp_path)
-
-            if not analysis_result:
-                await bot.edit_message_text(
-                    "❌ Не удалось распознать данные. Убедитесь, что фото четкое.",
-                    chat_id=message.chat.id,
-                    message_id=processing_msg.message_id
-                )
-                return
-
-            # 3. Сохранение в Firebase
-            # Добавляем user_id в данные перед сохранением
-            doc_id = await save_analysis_to_db(user_id, analysis_result)
-            
-            # 4. Форматирование ответа
-            final_text = format_analysis_card(analysis_result)
-
-            # 5. Отправка результата
-            await bot.edit_message_text(
-                final_text,
-                chat_id=message.chat.id,
-                message_id=processing_msg.message_id,
-                parse_mode='Markdown'
-            )
-
-        except Exception as e:
-            logger.error(f"Критическая ошибка при обработке: {e}")
-            await bot.edit_message_text(
-                "⚠️ Произошла техническая ошибка. Попробуйте позже.",
-                chat_id=message.chat.id,
-                message_id=processing_msg.message_id
-            )
-        finally:
-            # Удаление временного файла
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    @bot.message_handler(commands=['help'])
-    async def send_help(message):
-        help_text = (
-            "❓ **Как пользоваться Stapler?**\n\n"
-            "1. Отправьте фото бумажного анализа или PDF файл.\n"
-            "2. Подождите около 20 секунд, пока ИИ изучит данные.\n"
-            "3. Получите структурированный отчет и сохранение в архив.\n\n"
-            "💡 **Совет:** Для лучшего распознавания делайте фото при хорошем освещении и без теней."
+        # 3. ФОРМИРУЕМ КРАСИВОЕ ПРЕВЬЮ
+        preview_text = (
+            f"✅ <b>Анализ готов!</b>\n\n"
+            f"📋 <b>Тип:</b> {analysis_results.get('title', 'Не определен')}\n"
+            f"🏢 <b>Лаборатория:</b> {analysis_results.get('laboratory', 'н/д')}\n\n"
+            f"<b>Найденные показатели:</b>\n"
         )
-        await bot.reply_to(message, help_text, parse_mode='Markdown')
+        
+        # Берем первые 5 показателей для превью, чтобы сообщение не было слишком длинным
+        for p in analysis_results.get('parameters', [])[:7]:
+            icon = "🟢" if p.get('status') == 'normal' else "🔴"
+            preview_text += f"{icon} {p['name']}: {p['value']} {p.get('unit', '')}\n"
+        
+        if len(analysis_results.get('parameters', [])) > 7:
+            preview_text += f"<i>...и еще {len(analysis_results['parameters']) - 7} показателей</i>\n"
 
-    logger.info("✅ Обработчики успешно зарегистрированы.")
+        preview_text += "\n<b>Сохранить этот результат в вашу медкарту?</b>"
+
+        # 4. КНОПКИ
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💾 Сохранить в профиль", callback_data="save_to_db"),
+                InlineKeyboardButton(text="🗑 Отмена", callback_data="discard_analysis")
+            ]
+        ])
+
+        await status_msg.delete()
+        await message.answer(preview_text, reply_markup=keyboard, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Ошибка в handle_medical_file: {e}")
+        await status_msg.edit_text("💥 Произошла ошибка при обработке файла. Попробуйте позже.")
+
+@router.callback_query(F.data == "save_to_db", AnalysisStates.confirming_save)
+async def process_confirm_save(callback: CallbackQuery, state: FSMContext):
+    """
+    Шаг 2: Пользователь нажал "Сохранить". Переносим данные из кэша в Firestore.
+    """
+    # Достаем данные из FSM
+    user_data = await state.get_data()
+    analysis_data = user_data.get("temp_analysis")
+
+    if not analysis_data:
+        await callback.answer("⚠️ Ошибка: данные не найдены. Загрузите файл заново.", show_alert=True)
+        await state.clear()
+        return
+
+    # Вызываем реальную функцию записи в БД
+    success = await save_analysis_to_db(callback.from_user.id, analysis_data)
+
+    if success:
+        await callback.message.edit_text(
+            f"✅ <b>Успешно сохранено!</b>\n\nДанные добавлены в вашу историю. "
+            f"Теперь вы можете увидеть их в разделе /history.",
+            parse_mode="HTML"
+        )
+    else:
+        await callback.answer("❌ Ошибка при записи в базу данных.", show_alert=True)
+
+    # Обязательно очищаем состояние
+    await state.clear()
+
+@router.callback_query(F.data == "discard_analysis", AnalysisStates.confirming_save)
+async def process_discard_save(callback: CallbackQuery, state: FSMContext):
+    """
+    Шаг 2 (альтернатива): Пользователь нажал "Отмена".
+    """
+    await state.clear()
+    await callback.message.edit_text("🗑 Результат анализа удален из временной памяти. В базу ничего не записано.")
+    await callback.answer("Удалено")

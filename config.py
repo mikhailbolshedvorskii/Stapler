@@ -7,7 +7,6 @@ load_dotenv()
 class Config:
     """
     Класс для управления конфигурацией бота.
-    При миграции на Google VPS все эти значения будут браться из системы.
     """
     
     # Telegram Bot Token от BotFather
@@ -20,8 +19,11 @@ class Config:
     FIREBASE_KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase_key.json")
     FIREBASE_PROJECT_ID = "stapler-project"
 
-    # Настройки Proxy (важно для обхода блокировок)
-    # Добавляем PROXY_URL, так как main.py обращается к нему напрямую
+    # ID приложения для структуры путей в Firestore
+    # Этой переменной не хватало, что вызывало ошибку AttributeError
+    STAPLER_APP_ID = "stapler-app"
+
+    # Настройки Proxy
     PROXY_URL = os.getenv("PROXY_URL")
     
     # Уровень логирования

@@ -37,13 +37,14 @@ def get_db():
 async def save_analysis_to_db(user_id, analysis_data: dict):
     """
     Сохраняет результат анализа в Firestore.
-    Стыкуется с handlers.py (имя функции и параметры).
     """
     try:
         db = get_db()
         if not db:
+            logger.error("❌ Клиент базы данных не инициализирован.")
             return False
             
+        # Теперь config.STAPLER_APP_ID существует
         app_id = config.STAPLER_APP_ID
         user_id_str = str(user_id)
         
@@ -65,7 +66,7 @@ async def save_analysis_to_db(user_id, analysis_data: dict):
         analysis_ref.set(main_data)
 
         # Сохраняем показатели (маркеры) в подколлекцию
-        markers = analysis_data.get('indicators', [])
+        markers = analysis_data.get('indicators', []) or analysis_data.get('parameters', [])
         if markers:
             batch = db.batch()
             for marker in markers:
@@ -81,7 +82,7 @@ async def save_analysis_to_db(user_id, analysis_data: dict):
                 batch.set(marker_ref, marker_data)
             batch.commit()
             
-        logger.info(f"✅ Анализ {analysis_ref.id} сохранен для пользователя {user_id}")
+        logger.info(f"✅ Анализ {analysis_ref.id} успешно сохранен в Firestore для пользователя {user_id}")
         return analysis_ref.id
     except Exception as e:
         logger.error(f"❌ Ошибка при сохранении в Firestore: {e}")
@@ -89,8 +90,7 @@ async def save_analysis_to_db(user_id, analysis_data: dict):
 
 async def get_recent_analyses(user_id, limit: int = 5):
     """
-    Получает историю анализов. 
-    Имя функции изменено для совместимости с handlers.py
+    Получает историю анализов пользователя.
     """
     try:
         db = get_db()
@@ -104,8 +104,6 @@ async def get_recent_analyses(user_id, limit: int = 5):
                          .collection('users').document(user_id_str) \
                          .collection('analyses')
 
-        # ВАЖНО: Требует создания индекса в консоли Firebase, 
-        # если используется order_by вместе с фильтрацией.
         query = analyses_ref.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
         docs = query.stream()
 
