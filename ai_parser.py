@@ -62,7 +62,7 @@ async def analyze_document(file_path: str):
         )
 
         # Вызов API
-        response = await client.models.generate_content_async(
+        response = await client.aio.models.generate_content(
             model=MODEL_ID,
             contents=[
                 types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
