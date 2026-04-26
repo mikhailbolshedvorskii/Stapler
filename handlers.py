@@ -28,11 +28,11 @@ class AnalysisStates(StatesGroup):
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "👋 <b>Hello! I am Stapler.</b>\n\n"
-        "I am your medical assistant. Here is what I can do:\n\n"
-        "📥 <b>Upload:</b> Send a photo or PDF of your lab results.\n"
-        "📊 <b>Analytics:</b> Use /analysis to see trends over time.\n"
-        "💬 <b>Chat:</b> Ask me questions about your health data.",
+        "👋 <b>Здравствуйте! Я Stapler.</b>\n\n"
+        "Я ваш медицинский помощник. Вот что я могу сделать:\n\n"
+        "📥 <b>Загрузка:</b> Отправьте фото или PDF ваших анализов.\n"
+        "📊 <b>Анализ:</b> Используйте /analysis для просмотра тенденций со временем.\n"
+        "💬 <b>Чат:</b> Задавайте вопросы о ваших данных о здоровье.",
         parse_mode="HTML"
     )
 
@@ -40,10 +40,10 @@ async def cmd_start(message: Message):
 async def cmd_history(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     if not history:
-        await message.answer("Your history is currently empty.")
+        await message.answer("Ваша история загрузок пуста.")
         return
     
-    text = "📅 <b>Your upload history:</b>\n\n"
+    text = "📅 <b>Ваша история загрузок:</b>\n\n"
     for item in history:
         text += f"• {item.get('date')} — <b>{item.get('title')}</b>\n"
     
@@ -53,20 +53,20 @@ async def cmd_history(message: Message):
 async def cmd_analysis(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🗓 Month", callback_data="period_30"),
-            InlineKeyboardButton(text="🗓 3 Months", callback_data="period_90")
+            InlineKeyboardButton(text="🗓 Месяц", callback_data="period_30"),
+            InlineKeyboardButton(text="🗓 3 Месяца", callback_data="period_90")
         ],
         [
-            InlineKeyboardButton(text="🗓 6 Months", callback_data="period_180"),
-            InlineKeyboardButton(text="🗓 Year", callback_data="period_365")
+            InlineKeyboardButton(text="🗓 6 Месяцев", callback_data="period_180"),
+            InlineKeyboardButton(text="🗓 Год", callback_data="period_365")
         ],
         [
-            InlineKeyboardButton(text="📈 All Time", callback_data="period_3650")
+            InlineKeyboardButton(text="📈 Все время", callback_data="period_3650")
         ]
     ])
     
     await message.answer(
-        "📊 <b>Trend Analysis</b>\n\nFor which period should Stapler analyze your health markers?",
+        "📊 <b>Анализ тенденций</b>\n\nЗа какой период Stapler должен проанализировать ваши медицинские показатели?",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -84,17 +84,17 @@ async def process_period_analysis(callback: CallbackQuery):
     history = await get_recent_analyses(user_id, limit=50, days=days)
     
     if not history:
-        await callback.message.edit_text("❌ No data found for this period.")
+        await callback.message.edit_text("❌ Данные за этот период не найдены.")
         return
 
     # 2. Get AI Analysis
-    query = f"Analyze my medical trends for the last {days} days."
+    query = f"Анализируй мои медицинские тенденции за последние {days} дней."
     try:
         answer = await ask_medical_ai(query, history)
         
         # Navigation keyboard
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Back to menu", callback_data="back_to_analysis")]
+            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_analysis")]
         ])
         
         # Edit current message with text analysis
@@ -109,13 +109,13 @@ async def process_period_analysis(callback: CallbackQuery):
             if chart_file:
                 await callback.message.answer_photo(
                     photo=chart_file,
-                    caption=f"📈 Visual trend for: <b>{marker}</b>",
+                    caption=f"📈 График изменений: <b>{marker}</b>",
                     parse_mode="HTML"
                 )
 
     except Exception as e:
         logger.error(f"Analysis error: {e}")
-        await callback.message.edit_text("💥 An error occurred during analysis.")
+        await callback.message.edit_text("💥 Произошла ошибка во время анализа.")
 
 @router.callback_query(F.data == "back_to_analysis")
 async def back_to_analysis(callback: CallbackQuery):
@@ -125,7 +125,7 @@ async def back_to_analysis(callback: CallbackQuery):
 
 @router.message(F.document | F.photo)
 async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
-    status_msg = await message.answer("🔍 <b>Stapler is studying the document...</b>", parse_mode="HTML")
+    status_msg = await message.answer("🔍 <b>Stapler изучает документ...</b>", parse_mode="HTML")
     
     file_path = None
     try:
@@ -145,7 +145,7 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         analysis_results = await analyze_document(file_path)
         
         if not analysis_results or "indicators" not in analysis_results:
-            await status_msg.edit_text("❌ Could not recognize data. Please ensure the photo is clear.")
+            await status_msg.edit_text("❌ Не удалось распознать данные. Пожалуйста, убедитесь, что фото четкое.")
             return
 
         await state.update_data(temp_analysis=analysis_results)
@@ -163,8 +163,8 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💾 Save to Stapler", callback_data="save_to_db"),
-                InlineKeyboardButton(text="🗑 Delete", callback_data="discard_analysis")
+                InlineKeyboardButton(text="💾 Сохранить в Stapler", callback_data="save_to_db"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data="discard_analysis")
             ]
         ])
 
@@ -173,7 +173,7 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.error(f"File error: {e}")
-        await status_msg.edit_text("💥 Error reading file.")
+        await status_msg.edit_text("💥 Ошибка чтения файла.")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -183,7 +183,7 @@ async def process_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     success = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"))
     if success:
-        await callback.message.edit_text("✅ <b>Data saved to your Stapler health record!</b>")
+        await callback.message.edit_text("✅ <b>Данные успешно сохранены в Stapler!</b>")
     await state.clear()
 
 @router.callback_query(F.data == "discard_analysis", AnalysisStates.confirming_save)
@@ -199,7 +199,7 @@ async def handle_user_query(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     
     if not history:
-        await message.answer("Please upload an analysis first so I have data to discuss.")
+        await message.answer("Вначале загрузите файл с анализом, чтобы я мог обсудить данные.")
         return
 
     answer = await ask_medical_ai(message.text, history)
