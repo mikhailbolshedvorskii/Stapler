@@ -1,5 +1,3 @@
-python
-
 import os
 import logging
 from aiogram import Router, F, types, Bot
