@@ -78,7 +78,7 @@ async def process_period_analysis(callback: CallbackQuery):
     days = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     
-    await callback.message.edit_text(f"⌛ <b>Gathering data for {days} days and analyzing...</b>", parse_mode="HTML")
+    await callback.message.edit_text(f"⌛ <b>Сбор данных за {days} дней и анализ...</b>", parse_mode="HTML")
     
     # 1. Fetch data from DB
     history = await get_recent_analyses(user_id, limit=50, days=days)
@@ -152,9 +152,9 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         await state.set_state(AnalysisStates.confirming_save)
 
         preview = (
-            f"✅ <b>Document processed!</b>\n\n"
-            f"📋 <b>Type:</b> {analysis_results.get('title')}\n\n"
-            f"<b>Top Markers:</b>\n"
+            f"✅ <b>Документ обработан!</b>\n\n"
+            f"📋 <b>Тип:</b> {analysis_results.get('title')}\n\n"
+            f"<b>Ключевые показатели:</b>\n"
         )
         
         for ind in analysis_results.get('indicators', [])[:5]:
