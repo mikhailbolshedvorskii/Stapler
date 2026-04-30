@@ -1,5 +1,7 @@
 import os
 import logging
+from datetime import datetime
+from exporter import create_medical_report
 from aiogram import Router, F, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -8,7 +10,8 @@ from aiogram.types import (
     InlineKeyboardMarkup, 
     InlineKeyboardButton, 
     CallbackQuery, 
-    Message
+    Message,
+    BufferedInputFile
 )
 
 # Импорты модулей проекта
@@ -25,7 +28,7 @@ class AnalysisStates(StatesGroup):
 
 # --- БЛОК 1: КОМАНДЫ ---
 
-@router.message(Command("start"))
+@router.message(Command("start")) # команда бота - start
 async def cmd_start(message: Message):
     await message.answer(
         "👋 <b>Привет! Я Stapler.</b>\n\n"
@@ -36,7 +39,7 @@ async def cmd_start(message: Message):
         parse_mode="HTML"
     )
 
-@router.message(Command("history"))
+@router.message(Command("history")) # команда бота - history
 async def cmd_history(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     if not history:
@@ -49,7 +52,7 @@ async def cmd_history(message: Message):
     
     await message.answer(text, parse_mode="HTML")
 
-@router.message(Command("analysis"))
+@router.message(Command("analysis")) # команда бота - analysis
 async def cmd_analysis(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -65,6 +68,47 @@ async def cmd_analysis(message: Message):
         ]
     ])
     await message.answer("📊 <b>Анализ динамики</b>\n\nЗа какой период проанализировать показатели?", reply_markup=keyboard, parse_mode="HTML")
+
+@router.message(Command("export")) # команда бота - export
+async def cmd_export(message: Message):
+    status_msg = await message.answer("📋 <b>Stapler формирует ваш медицинский отчет...</b>", parse_mode="HTML")
+    
+    user_id = message.from_user.id
+    # 1. Получаем историю (до 100 последних записей для полноты картины)
+    history = await get_recent_analyses(user_id, limit=100)
+    
+    if not history:
+        await status_msg.edit_text("❌ В вашей базе пока нет данных для экспорта.")
+        return
+
+    try:
+        # 2. Собираем графики для отчета по ключевым маркерам
+        charts_for_pdf = []
+        target_markers = ["Гемоглобин", "Глюкоза", "Холестерин", "Железо", "C3", "C4"]
+        
+        for marker in target_markers:
+            chart = generate_trend_chart(history, marker)
+            if chart:
+                charts_for_pdf.append(chart)
+
+        # 3. Генерируем PDF через наш новый модуль
+        user_name = message.from_user.full_name or "Пациент Stapler"
+        pdf_buffer = create_medical_report(user_name, history, charts_for_pdf)
+        
+        # 4. Отправляем готовый файл
+        file_name = f"Stapler_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
+        document = BufferedInputFile(pdf_buffer.read(), filename=file_name)
+        
+        await message.answer_document(
+            document=document,
+            caption="✅ <b>Ваш медицинский отчет готов!</b>\n\nВ нем собраны все ваши анализы и графики динамики показателей.",
+            parse_mode="HTML"
+        )
+        await status_msg.delete()
+
+    except Exception as e:
+        logger.error(f"Ошибка при экспорте PDF: {e}")
+        await status_msg.edit_text("💥 Произошла ошибка при генерации PDF-отчета.")
 
 # --- БЛОК 2: ОБРАБОТКА КНОПОК ПЕРИОДА (АНАЛИТИКА + ГРАФИКИ) ---
 
