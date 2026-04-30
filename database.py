@@ -8,7 +8,6 @@ from config import config
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-# Глобальная переменная для клиента
 _db_client = None
 
 def initialize_firebase():
@@ -33,13 +32,13 @@ def get_db():
         return initialize_firebase()
     return _db_client
 
-async def save_analysis_to_db(user_id, analysis_data: dict):
-    """Асинхронная обертка для сохранения анализа."""
+async def save_analysis_to_db(user_id, analysis_data: dict, file_unique_id: str = None):
+    """Асинхронная обертка для сохранения анализа с защитой от дубликатов."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _sync_save_analysis, user_id, analysis_data)
+    return await loop.run_in_executor(None, _sync_save_analysis, user_id, analysis_data, file_unique_id)
 
-def _sync_save_analysis(user_id, analysis_data: dict):
-    """Синхронная логика сохранения в базу."""
+def _sync_save_analysis(user_id, analysis_data: dict, file_unique_id: str):
+    """Синхронная логика сохранения с проверкой на дубликаты."""
     try:
         db = get_db()
         if not db: return None
@@ -47,22 +46,32 @@ def _sync_save_analysis(user_id, analysis_data: dict):
         app_id = config.STAPLER_APP_ID
         user_id_str = str(user_id)
         
-        # Основной документ анализа
-        analysis_ref = db.collection('artifacts').document(app_id) \
-                         .collection('users').document(user_id_str) \
-                         .collection('analyses').document()
+        user_analyses_ref = db.collection('artifacts').document(app_id) \
+                              .collection('users').document(user_id_str) \
+                              .collection('analyses')
+
+        # 1. ЗАЩИТА ОТ ДУБЛИКАТОВ
+        if file_unique_id:
+            existing = user_analyses_ref.where("file_unique_id", "==", file_unique_id).get()
+            if len(existing) > 0:
+                logger.info(f"⚠️ Дубликат файла {file_unique_id} для пользователя {user_id}")
+                return "duplicate"
+
+        # 2. СОЗДАНИЕ ЗАПИСИ
+        analysis_ref = user_analyses_ref.document()
 
         main_data = {
             "title": analysis_data.get('title', 'Медицинский анализ'),
             "date": analysis_data.get('date', datetime.now().strftime("%Y-%m-%d")),
             "laboratory": analysis_data.get('laboratory', 'Неизвестная лаборатория'),
             "summary": analysis_data.get('summary', ''),
-            "created_at": firestore.SERVER_TIMESTAMP # Важно для фильтрации по времени
+            "file_unique_id": file_unique_id, # Сохраняем для будущих проверок
+            "created_at": firestore.SERVER_TIMESTAMP
         }
 
         analysis_ref.set(main_data)
 
-        # Сохранение маркеров (показателей)
+        # 3. СОХРАНЕНИЕ ИНДИКАТОРОВ
         markers = analysis_data.get('indicators') or analysis_data.get('parameters') or []
         if markers:
             batch = db.batch()
@@ -78,22 +87,19 @@ def _sync_save_analysis(user_id, analysis_data: dict):
                 })
             batch.commit()
             
-        logger.info(f"✅ Анализ сохранен в Stapler для {user_id}")
+        logger.info(f"✅ Анализ {analysis_ref.id} успешно сохранен.")
         return analysis_ref.id
     except Exception as e:
         logger.error(f"❌ Ошибка Firestore при сохранении: {e}")
         return None
 
 async def get_recent_analyses(user_id, limit: int = 5, days: int = None):
-    """
-    Получает историю анализов. 
-    Если указан 'days', фильтрует за последние X дней.
-    """
+    """Получает историю анализов с подгрузкой показателей."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _sync_get_analyses, user_id, limit, days)
 
 def _sync_get_analyses(user_id, limit, days):
-    """Синхронная логика получения данных."""
+    """Синхронная логика выборки из БД."""
     try:
         db = get_db()
         if not db: return []
@@ -102,15 +108,12 @@ def _sync_get_analyses(user_id, limit, days):
                      .collection('users').document(str(user_id)) \
                      .collection('analyses')
 
-        # Базовый запрос с сортировкой по дате создания
         query = user_ref.order_by("created_at", direction=firestore.Query.DESCENDING)
 
-        # Фильтр по периоду (для команды /analysis)
         if days:
             start_date = datetime.now() - timedelta(days=days)
             query = query.where("created_at", ">=", start_date)
 
-        # Лимит документов
         if limit:
             query = query.limit(limit)
 
@@ -120,7 +123,7 @@ def _sync_get_analyses(user_id, limit, days):
             data = doc.to_dict()
             data['id'] = doc.id
             
-            # Подгружаем маркеры для каждого анализа, чтобы ИИ видел цифры
+            # Важно для графиков: подгружаем все маркеры для каждого анализа
             markers_docs = doc.reference.collection('markers').stream()
             data['indicators'] = [m.to_dict() for m in markers_docs]
             
@@ -128,5 +131,5 @@ def _sync_get_analyses(user_id, limit, days):
             
         return history
     except Exception as e:
-        logger.error(f"❌ Ошибка при получении истории: {e}")
+        logger.error(f"❌ Ошибка при получении данных: {e}")
         return []

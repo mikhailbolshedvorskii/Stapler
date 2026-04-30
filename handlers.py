@@ -40,12 +40,12 @@ async def cmd_start(message: Message):
 async def cmd_history(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     if not history:
-        await message.answer("У вас пока нет сохраненных анализов.")
+        await message.answer("Ваша база данных пока пуста.")
         return
     
-    text = "📅 <b>Ваша история загрузок:</b>\n\n"
-    for item in history:
-        text += f"• {item.get('date')} — <b>{item.get('title')}</b>\n"
+    text = "📅 <b>Последние анализы:</b>\n\n"
+    for a in history:
+        text += f"• {a.get('date')} — {a.get('title')}\n"
     
     await message.answer(text, parse_mode="HTML")
 
@@ -64,22 +64,16 @@ async def cmd_analysis(message: Message):
             InlineKeyboardButton(text="📈 Вся история", callback_data="period_3650")
         ]
     ])
-    
-    await message.answer(
-        "📊 <b>Анализ динамики</b>\n\nЗа какой период Stapler должен проанализировать ваши показатели?",
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+    await message.answer("📊 <b>Анализ динамики</b>\n\nЗа какой период проанализировать показатели?", reply_markup=keyboard, parse_mode="HTML")
 
-# --- БЛОК 2: ОБРАБОТКА АНАЛИТИКИ (КНОПКИ ПЕРИОДА) ---
+# --- БЛОК 2: ОБРАБОТКА КНОПОК ПЕРИОДА (АНАЛИТИКА + ГРАФИКИ) ---
 
 @router.callback_query(F.data.startswith("period_"))
 async def process_period_analysis(callback: CallbackQuery):
-    days = int(callback.data.split("_")[1])
+    days = int(callback.data.split("_")[1]) # Исправлен сплит
     user_id = callback.from_user.id
     
     await callback.message.edit_text(f"⌛ <b>Собираю данные за {days} дн. и анализирую...</b>", parse_mode="HTML")
-    
     history = await get_recent_analyses(user_id, limit=50, days=days)
     
     if not history:
@@ -87,17 +81,15 @@ async def process_period_analysis(callback: CallbackQuery):
         return
 
     query = f"Проведи глубокий анализ моих данных за последние {days} дней. Какие тренды ты видишь?"
-    
     try:
         answer = await ask_medical_ai(query, history)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_analysis")]
         ])
-        
         await callback.message.edit_text(answer, parse_mode="Markdown", reply_markup=keyboard)
 
-        # Генерация графиков по списку ключевых маркеров
-        target_markers = ["Гемоглобин", "Глюкоза", "Холестерин", "C3", "C4", "Железо", "Ферритин"]
+        # Популярные маркеры для отрисовки графиков
+        target_markers = ["Гемоглобин", "Глюкоза", "Холестерин", "C3", "C4", "Железо", "Ферритин", "АКТГ", "Кортизол"]
         for marker in target_markers:
             chart_file = generate_trend_chart(history, marker)
             if chart_file:
@@ -124,14 +116,15 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
     try:
         if message.document:
             file_id = message.document.file_id
+            file_unique_id = message.document.file_unique_id
             ext = message.document.file_name.split('.')[-1] if '.' in message.document.file_name else "pdf"
         else:
             file_id = message.photo[-1].file_id
+            file_unique_id = message.photo[-1].file_unique_id
             ext = "jpg"
 
         os.makedirs("temp", exist_ok=True)
         file_path = f"temp/{file_id}.{ext}"
-        
         file = await bot.get_file(file_id)
         await bot.download_file(file.file_path, destination=file_path)
 
@@ -141,24 +134,25 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
             await status_msg.edit_text("❌ Не удалось распознать данные.")
             return
 
-        await state.update_data(temp_analysis=analysis_results)
+        await state.update_data(temp_analysis=analysis_results, file_unique_id=file_unique_id)
         await state.set_state(AnalysisStates.confirming_save)
 
-        # Ссылка на файл в чате (UX: переход к исходнику)
-        file_url = message.get_url()
+        # Ссылка на файл (теперь кликабельная через t.me/c/)
+        chat_id_short = str(message.chat.id).replace("-100", "")
+        file_link = f"https://t.me{chat_id_short}/{message.message_id}"
+
         preview = (
             f"📋 <b>{analysis_results.get('title', 'Анализ')}</b>\n"
             f"📅 <b>Дата:</b> {analysis_results.get('date', 'не указана')}\n"
             f"🏥 <b>{analysis_results.get('laboratory', 'Лаборатория н/д')}</b>\n"
-            f"🔗 <a href='{file_url}'>Посмотреть исходный файл</a>\n"
+            f"🔗 <a href='{file_link}'>Посмотреть исходный файл</a>\n"
             f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         )
         
         for ind in analysis_results.get('indicators', []):
-            # На скриншоте везде галочки, если результат Negative/Норма
-            status_ico = "✅" if ind.get('status') == 'normal' else "⚠️" 
+            status_ico = "✅" if ind.get('status') == 'normal' else "⚠️"
             norm_text = f" (<i>Норма: {ind.get('norm')}</i>)" if ind.get('norm') else ""
-            preview += f"{status_ico} {ind['name']}: {ind['value']} {ind.get('unit', '')} {norm_text}\n"
+            preview += f"{status_ico} {ind['name']}: {ind['value']} {ind.get('unit', '')}{norm_text}\n"
 
         preview += (
             f"\n🤖 <b>Комментарий Google Gemini:</b>\n"
@@ -175,11 +169,10 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         ])
 
         await status_msg.delete()
-        # disable_web_page_preview=True чтобы ссылка на файл не раздувала сообщение
         await message.answer(preview, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
 
     except Exception as e:
-        logger.error(f"Ошибка загрузки: {e}")
+        logger.error(f"Ошибка файла: {e}")
         await status_msg.edit_text("💥 Ошибка при чтении файла.")
     finally:
         if file_path and os.path.exists(file_path):
@@ -188,16 +181,20 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "save_to_db", AnalysisStates.confirming_save)
 async def process_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    success = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"))
+    success = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"), data.get("file_unique_id"))
     
-     if success:
+    if success == "duplicate":
+        await callback.answer("⚠️ Этот анализ уже сохранен!", show_alert=True)
+    elif success:
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.answer("✅ Сохранено")
-        # Текст, который заменяет кнопки или просто фиксирует успех
-        await callback.message.answer("💾 <b>Данные сохранены в ваш личный профиль.</b>\n❗ <b>Не является диагнозом. Обратитесь к врачу.</b>", parse_mode="HTML")
+        text = (
+            "💾 <b>Данные сохранены в ваш личный профиль.</b>\n"
+            "❗ <b>Не является диагнозом. Обратитесь к врачу.</b>"
+        )
+        await callback.message.answer(text, parse_mode="HTML")
     else:
         await callback.answer("❌ Ошибка при сохранении", show_alert=True)
-    
     await state.clear()
 
 @router.callback_query(F.data == "discard_analysis", AnalysisStates.confirming_save)
