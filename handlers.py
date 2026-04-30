@@ -110,7 +110,12 @@ async def back_to_analysis(callback: CallbackQuery):
 
 @router.message(F.document | F.photo)
 async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
-    status_msg = await message.answer("🔍 <b>Stapler изучает документ...</b>", parse_mode="HTML")
+    # Добавляем reply_to_message_id прямо здесь
+    status_msg = await message.answer(
+        "🔍 <b>Stapler изучает документ...</b>", 
+        parse_mode="HTML",
+        reply_to_message_id=message.message_id # Это сделает статус "ответом" на файл
+    )
     
     file_path = None
     try:
@@ -142,16 +147,11 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         await state.update_data(temp_analysis=analysis_results, file_unique_id=file_unique_id)
         await state.set_state(AnalysisStates.confirming_save)
 
-        # 5. Формируем ссылку на исходный файл (кликабельную)
-        chat_id_short = str(message.chat.id).replace("-100", "")
-        file_link = f"https://t.me{chat_id_short}/{message.message_id}"
-
         # 6. Формируем "богатую" карточку
         preview = (
             f"📋 <b>{analysis_results.get('title', 'Анализ')}</b>\n"
             f"📅 <b>Дата:</b> {analysis_results.get('date', 'не указана')}\n"
             f"🏥 <b>{analysis_results.get('laboratory', 'Лаборатория н/д')}</b>\n"
-            f"🔗 <a href='{file_link}'>Посмотреть исходный файл</a>\n"
             f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         )
         
