@@ -3,7 +3,7 @@ import io
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HrLine
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
@@ -69,7 +69,7 @@ def create_medical_report(user_name, history, charts_data=None):
     elements.append(Paragraph(f"<b>Пациент:</b> {user_name}", rus_style))
     elements.append(Paragraph(f"<b>Дата формирования:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", rus_style))
     elements.append(Spacer(1, 10))
-    elements.append(HrLine(width=1, color=colors.grey))
+    elements.append(HRFlowable(width=1, color=colors.grey))
     elements.append(Spacer(1, 20))
 
     # --- ОСНОВНОЙ БЛОК: ТАБЛИЦЫ АНАЛИЗОВ ---
