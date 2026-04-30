@@ -134,7 +134,7 @@ def create_medical_report(user_name, history, charts_data=None):
                 elements.append(Spacer(1, 15))
 
         # Линия-разделитель между разными анализами для "воздуха"
-        elements.append(HrLine(width=0.5, color=colors.lightgrey))
+        elements.append(HRFlowable(width=0.5, color=colors.lightgrey))
         elements.append(Spacer(1, 20))
 
     # --- БЛОК ГРАФИКОВ ---
