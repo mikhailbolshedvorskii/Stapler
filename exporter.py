@@ -77,52 +77,65 @@ def create_medical_report(user_name, history, charts_data=None):
     sorted_history = sorted(history, key=lambda x: x.get('date', ''), reverse=True)
 
     for record in sorted_history:
-        # Заголовок конкретного анализа
+        # 1. Заголовок и лаборатория (уже есть в коде)
         elements.append(Paragraph(f"📅 {record.get('date')} — {record.get('title')}", header_style))
         elements.append(Paragraph(f"🏥 Лаборатория: {record.get('laboratory', 'н/д')}", rus_style))
         elements.append(Spacer(1, 10))
 
-        # Подготовка данных для таблицы
-        # Используем Paragraph внутри ячеек для автоматического переноса текста
-        data = [[
-            Paragraph("<b>Показатель</b>", rus_style), 
-            Paragraph("<b>Значение</b>", rus_style), 
-            Paragraph("<b>Норма</b>", rus_style), 
-            Paragraph("<b>Статус</b>", rus_style)
-        ]]
-
+        # --- НОВАЯ ЛОГИКА ТУТ ---
         indicators = record.get('indicators', [])
-        for ind in indicators:
-            status_map = {"normal": "Норма", "high": "Выше", "low": "Ниже"}
-            status_rus = status_map.get(ind.get('status', ''), ind.get('status', ''))
-            
-            # Название показателя пакуем в Paragraph для переноса строк
-            name_p = Paragraph(ind.get('name', 'Неизвестно'), rus_style)
-            
-            data.append([
-                name_p,
-                f"{ind.get('value', '')} {ind.get('unit', '')}",
-                ind.get('norm', ''),
-                status_rus
-            ])
+        
+        # Если это текстовый отчет (рентген) и список показателей пуст
+        if not indicators:
+            elements.append(Paragraph("<b>Описание / Заключение:</b>", rus_style))
+            # Берем текст из поля summary
+            summary_text = record.get('summary', 'Описание отсутствует в базе.')
+            elements.append(Paragraph(summary_text, rus_style))
+            elements.append(Spacer(1, 15))
+        else:
+            # Если показатели есть, рисуем таблицу (твой текущий код)
+            data = [[
+                Paragraph("<b>Показатель</b>", rus_style), 
+                Paragraph("<b>Значение</b>", rus_style), 
+                Paragraph("<b>Норма</b>", rus_style), 
+                Paragraph("<b>Статус</b>", rus_style)
+            ]]
 
-        # Настройка ширины колонок (Всего ~515 пунктов)
-        col_widths = [265, 85, 90, 75]
-        
-        t = Table(data, colWidths=col_widths, hAlign='LEFT')
-        t.setStyle(TableStyle([
-            ('FONTNAME', (0,0), (-1,-1), MAIN_FONT),
-            ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
-            ('VALIGN', (0,0), (-1,-1), 'TOP'), # Текст прижат к верху ячейки
-            ('LEFTPADDING', (0,0), (-1,-1), 6),
-            ('RIGHTPADDING', (0,0), (-1,-1), 6),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-            ('TOPPADDING', (0,0), (-1,-1), 6),
-        ]))
-        
-        elements.append(t)
-        elements.append(Spacer(1, 25))
+            for ind in indicators:
+                status_map = {"normal": "Норма", "high": "Выше", "low": "Ниже"}
+                status_rus = status_map.get(ind.get('status', ''), ind.get('status', ''))
+                name_p = Paragraph(ind.get('name', 'Неизвестно'), rus_style)
+                
+                data.append([
+                    name_p,
+                    f"{ind.get('value', '')} {ind.get('unit', '')}",
+                    ind.get('norm', ''),
+                    status_rus
+                ])
+
+            col_widths = [265, 80, 90, 80]
+            t = Table(data, colWidths=col_widths, hAlign='LEFT')
+            t.setStyle(TableStyle([
+                ('FONTNAME', (0,0), (-1,-1), MAIN_FONT),
+                ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 6),
+                ('RIGHTPADDING', (0,0), (-1,-1), 6),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                ('TOPPADDING', (0,0), (-1,-1), 6),
+            ]))
+            elements.append(t)
+            elements.append(Spacer(1, 20))
+            
+            # В конце табличного анализа тоже добавим краткое резюме, если оно есть
+            if record.get('summary'):
+                elements.append(Paragraph(f"<i>Комментарий: {record.get('summary')}</i>", rus_style))
+                elements.append(Spacer(1, 15))
+
+        # Линия-разделитель между разными анализами для "воздуха"
+        elements.append(HrLine(width=0.5, color=colors.lightgrey))
+        elements.append(Spacer(1, 20))
 
     # --- БЛОК ГРАФИКОВ ---
     if charts_data:
