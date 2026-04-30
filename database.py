@@ -52,7 +52,7 @@ def _sync_save_analysis(user_id, analysis_data: dict, file_unique_id: str):
 
         # 1. ЗАЩИТА ОТ ДУБЛИКАТОВ
         if file_unique_id:
-            existing = user_analyses_ref.where("file_unique_id", "==", file_unique_id).get()
+            existing = user_analyses_ref.where(field_path="file_unique_id", op_string="==", value=file_unique_id).get()
             if len(existing) > 0:
                 logger.info(f"⚠️ Дубликат файла {file_unique_id} для пользователя {user_id}")
                 return "duplicate"
@@ -107,12 +107,15 @@ def _sync_get_analyses(user_id, limit, days):
         user_ref = db.collection('artifacts').document(config.STAPLER_APP_ID) \
                      .collection('users').document(str(user_id)) \
                      .collection('analyses')
+        
+        # Сначала создаем базовый запрос
+        query = user_ref.order_by(field_path="created_at", direction=firestore.Query.DESCENDING)
 
-        query = user_ref.order_by("created_at", direction=firestore.Query.DESCENDING)
+        # Затем, ЕСЛИ указаны дни, добавляем фильтр
 
         if days:
             start_date = datetime.now() - timedelta(days=days)
-            query = query.where("created_at", ">=", start_date)
+            query = query.where(field_path="created_at", op_string=">=", value=start_date)
 
         if limit:
             query = query.limit(limit)
