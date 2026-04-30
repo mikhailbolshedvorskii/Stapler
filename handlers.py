@@ -114,6 +114,7 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
     
     file_path = None
     try:
+        # 1. Извлекаем ID и уникальный ID файла
         if message.document:
             file_id = message.document.file_id
             file_unique_id = message.document.file_unique_id
@@ -123,24 +124,29 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
             file_unique_id = message.photo[-1].file_unique_id
             ext = "jpg"
 
+        # 2. Скачивание файла
         os.makedirs("temp", exist_ok=True)
         file_path = f"temp/{file_id}.{ext}"
+        
         file = await bot.get_file(file_id)
         await bot.download_file(file.file_path, destination=file_path)
 
+        # 3. Анализ через ИИ
         analysis_results = await analyze_document(file_path)
         
         if not analysis_results or "indicators" not in analysis_results:
-            await status_msg.edit_text("❌ Не удалось распознать данные.")
+            await status_msg.edit_text("❌ Не удалось распознать данные. Проверьте четкость фото.")
             return
 
+        # 4. Сохраняем данные в состояние FSM
         await state.update_data(temp_analysis=analysis_results, file_unique_id=file_unique_id)
         await state.set_state(AnalysisStates.confirming_save)
 
-        # Ссылка на файл (теперь кликабельная через t.me/c/)
+        # 5. Формируем ссылку на исходный файл (кликабельную)
         chat_id_short = str(message.chat.id).replace("-100", "")
         file_link = f"https://t.me{chat_id_short}/{message.message_id}"
 
+        # 6. Формируем "богатую" карточку
         preview = (
             f"📋 <b>{analysis_results.get('title', 'Анализ')}</b>\n"
             f"📅 <b>Дата:</b> {analysis_results.get('date', 'не указана')}\n"
@@ -168,12 +174,15 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
             ]
         ])
 
-        await status_msg.delete()
-        await message.answer(preview, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+        # 7. Заменяем текст ожидания на результат (edit_text вместо delete)
+        await status_msg.edit_text(preview, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
 
     except Exception as e:
-        logger.error(f"Ошибка файла: {e}")
-        await status_msg.edit_text("💥 Ошибка при чтении файла.")
+        logger.error(f"Ошибка в handle_medical_file: {e}")
+        try:
+            await status_msg.edit_text("💥 Ошибка при чтении файла. Попробуйте еще раз.")
+        except:
+            await message.answer("💥 Ошибка при чтении файла.")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
