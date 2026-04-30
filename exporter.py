@@ -1,96 +1,145 @@
 import os
+import io
+from datetime import datetime
+
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HrLine
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from datetime import datetime
-import io
 
-# Регистрируем шрифт для поддержки русского языка
-# Убедись, что файл DejaVuSans.ttf лежит в той же папке!
+# 1. Регистрация шрифта (DejaVuSans поддерживает кириллицу)
 FONT_PATH = "DejaVuSans.ttf"
 if os.path.exists(FONT_PATH):
     pdfmetrics.registerFont(TTFont('DejaVuSans', FONT_PATH))
     MAIN_FONT = 'DejaVuSans'
+    BOLD_FONT = 'DejaVuSans' # Если есть DejaVuSans-Bold.ttf, лучше использовать его
 else:
-    MAIN_FONT = 'Helvetica' # Резервный, если шрифт не найден (русский не будет виден)
+    # Если шрифта нет, PDF будет на английском (русский пропадет)
+    MAIN_FONT = 'Helvetica'
+    BOLD_FONT = 'Helvetica-Bold'
 
 def create_medical_report(user_name, history, charts_data=None):
     """
-    Создает PDF-отчет со списком анализов и графиками.
-    charts_data: список объектов BufferedInputFile с графиками
+    Создает профессиональный PDF-отчет со структурированными таблицами и графиками.
     """
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50)
-    elements = []
+    # Настройка документа с полями
+    doc = SimpleDocTemplate(
+        buffer, 
+        pagesize=A4, 
+        rightMargin=40, 
+        leftMargin=40, 
+        topMargin=40, 
+        bottomMargin=40
+    )
     
+    elements = []
     styles = getSampleStyleSheet()
-    # Создаем кастомный стиль для русского текста
+
+    # Кастомные стили для русского языка и верстки
     rus_style = ParagraphStyle(
         'RusStyle',
-        parent=styles['Normal'],
         fontName=MAIN_FONT,
         fontSize=10,
-        leading=12
+        leading=12,
+        spaceAfter=6
     )
+    
+    header_style = ParagraphStyle(
+        'HeaderStyle',
+        fontName=MAIN_FONT,
+        fontSize=14,
+        leading=18,
+        spaceBefore=15,
+        spaceAfter=10
+    )
+
     title_style = ParagraphStyle(
         'TitleStyle',
-        parent=styles['Heading1'],
         fontName=MAIN_FONT,
-        fontSize=18,
+        fontSize=20,
         alignment=1, # По центру
-        spaceAfter=20
+        spaceAfter=30
     )
 
-    # 1. Заголовок
-    elements.append(Paragraph(f"Медицинский отчет Stapler", title_style))
-    elements.append(Paragraph(f"Пациент: {user_name}", rus_style))
-    elements.append(Paragraph(f"Дата формирования: {datetime.now().strftime('%d.%m.%Y %H:%M')}", rus_style))
+    # --- ТИТУЛЬНЫЙ БЛОК ---
+    elements.append(Paragraph("<b>Медицинский отчет Stapler</b>", title_style))
+    elements.append(Paragraph(f"<b>Пациент:</b> {user_name}", rus_style))
+    elements.append(Paragraph(f"<b>Дата формирования:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", rus_style))
+    elements.append(Spacer(1, 10))
+    elements.append(HrLine(width=1, color=colors.grey))
     elements.append(Spacer(1, 20))
 
-    # 2. Основной блок с анализами
-    for record in history:
-        elements.append(Paragraph(f"<b>{record.get('date')} — {record.get('title')}</b>", rus_style))
-        elements.append(Paragraph(f"Лаборатория: {record.get('laboratory', 'н/д')}", rus_style))
+    # --- ОСНОВНОЙ БЛОК: ТАБЛИЦЫ АНАЛИЗОВ ---
+    # Сортируем историю по дате (от новых к старым)
+    sorted_history = sorted(history, key=lambda x: x.get('date', ''), reverse=True)
+
+    for record in sorted_history:
+        # Заголовок конкретного анализа
+        elements.append(Paragraph(f"📅 {record.get('date')} — {record.get('title')}", header_style))
+        elements.append(Paragraph(f"🏥 Лаборатория: {record.get('laboratory', 'н/д')}", rus_style))
         elements.append(Spacer(1, 10))
 
-        # Таблица показателей
-        data = [["Показатель", "Значение", "Норма", "Статус"]]
+        # Подготовка данных для таблицы
+        # Используем Paragraph внутри ячеек для автоматического переноса текста
+        data = [[
+            Paragraph("<b>Показатель</b>", rus_style), 
+            Paragraph("<b>Значение</b>", rus_style), 
+            Paragraph("<b>Норма</b>", rus_style), 
+            Paragraph("<b>Статус</b>", rus_style)
+        ]]
+
         indicators = record.get('indicators', [])
         for ind in indicators:
             status_map = {"normal": "Норма", "high": "Выше", "low": "Ниже"}
+            status_rus = status_map.get(ind.get('status', ''), ind.get('status', ''))
+            
+            # Название показателя пакуем в Paragraph для переноса строк
+            name_p = Paragraph(ind.get('name', 'Неизвестно'), rus_style)
+            
             data.append([
-                ind.get('name', ''),
+                name_p,
                 f"{ind.get('value', '')} {ind.get('unit', '')}",
                 ind.get('norm', ''),
-                status_map.get(ind.get('status', ''), ind.get('status', ''))
+                status_rus
             ])
 
-        t = Table(data, colWidths=[180, 100, 100, 80])
+        # Настройка ширины колонок (Всего ~515 пунктов)
+        col_widths = [265, 85, 90, 75]
+        
+        t = Table(data, colWidths=col_widths, hAlign='LEFT')
         t.setStyle(TableStyle([
             ('FONTNAME', (0,0), (-1,-1), MAIN_FONT),
             ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'), # Текст прижат к верху ячейки
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('RIGHTPADDING', (0,0), (-1,-1), 6),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ('TOPPADDING', (0,0), (-1,-1), 6),
         ]))
+        
         elements.append(t)
-        elements.append(Spacer(1, 20))
+        elements.append(Spacer(1, 25))
 
-    # 3. Блок графиков (если они есть)
+    # --- БЛОК ГРАФИКОВ ---
     if charts_data:
+        # Переход на новую страницу для графиков
+        from reportlab.platypus import PageBreak
+        elements.append(PageBreak())
+        elements.append(Paragraph("📊 Динамика ключевых показателей", title_style))
         elements.append(Spacer(1, 20))
-        elements.append(Paragraph("📊 Динамика ключевых показателей:", title_style))
-        for chart_buf in charts_data:
-            # Превращаем байты графика в объект Image для PDF
-            img_data = io.BytesIO(chart_buf.data)
-            img = Image(img_data, width=450, height=250)
-            elements.append(img)
-            elements.append(Spacer(1, 10))
 
-    # Сохраняем
+        for chart_buf in charts_data:
+            # Превращаем BufferedInputFile (байты) в изображение
+            img_data = io.BytesIO(chart_buf.data)
+            img = Image(img_data, width=460, height=260)
+            elements.append(img)
+            elements.append(Spacer(1, 30))
+
+    # Генерация документа
     doc.build(elements)
     buffer.seek(0)
     return buffer
