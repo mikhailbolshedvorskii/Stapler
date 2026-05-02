@@ -15,7 +15,7 @@ from aiogram.types import (
 )
 
 # Импорты модулей проекта
-from database import save_analysis_to_db, get_recent_analyses
+from database import save_analysis_to_db, get_recent_analyses, delete_analysis_from_db
 from ai_parser import analyze_document
 from qa_engine import ask_medical_ai 
 from charts import generate_trend_chart 
@@ -234,26 +234,84 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "save_to_db", AnalysisStates.confirming_save)
 async def process_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    success = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"), data.get("file_unique_id"))
+    # In your code, 'success' actually contains the analysis_id from database.py
+    analysis_id = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"), data.get("file_unique_id"))
     
-    if success == "duplicate":
+    if analysis_id == "duplicate":
         await callback.answer("⚠️ Этот анализ уже сохранен!", show_alert=True)
-    elif success:
+    elif analysis_id:
+        # 1. Remove buttons from the original analysis card
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.answer("✅ Сохранено")
+
+        # 2. Prepare data for the confirmation button
+        title = data.get("temp_analysis", {}).get("title", "Анализ")
+        date = data.get("temp_analysis", {}).get("date", "н/д")
+        
+        # We pack info into callback_data: del_req|[id]|[date]|[title]
+        # Shorten title to avoid Telegram's 64-byte limit
+        short_title = title[:15] + ".." if len(title) > 15 else title
+        cb_data = f"del_req|{analysis_id}|{date}|{short_title}"
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить эту запись", callback_data=cb_data)]
+        ])
+
         text = (
             "💾 <b>Данные сохранены в ваш личный профиль.</b>\n"
             "❗ <b>Не является диагнозом. Обратитесь к врачу.</b>"
         )
-        await callback.message.answer(text, parse_mode="HTML")
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await callback.answer("❌ Ошибка при сохранении", show_alert=True)
+
     await state.clear()
 
 @router.callback_query(F.data == "discard_analysis", AnalysisStates.confirming_save)
 async def process_discard(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("🗑 Результат анализа удален из чата.")
+
+@router.callback_query(F.data.startswith("del_req|"))
+async def confirm_delete_request(callback: CallbackQuery):
+    # Unpack the data
+    _, analysis_id, date, title = callback.data.split("|")
+    
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_del_{analysis_id}"),
+            InlineKeyboardButton(text="❌ Нет, оставить", callback_data="cancel_del")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        f"❓ <b>Вы уверены, что хотите удалить запись?</b>\n\n"
+        f"📋 <b>{title}</b>\n"
+        f"📅 <b>Дата: {date}</b>\n\n"
+        f"⚠️ Это действие нельзя отменить.",
+        reply_markup=confirm_kb,
+        parse_mode="HTML"
+    )
+
+# STEP 2: The actual execution (stays mostly the same)
+@router.callback_query(F.data.startswith("confirm_del_"))
+async def execute_delete(callback: CallbackQuery):
+    analysis_id = callback.data.replace("confirm_del_", "")
+    user_id = callback.from_user.id
+    
+    success = await delete_analysis_from_db(user_id, analysis_id)
+    
+    if success:
+        await callback.answer("🗑 Удалено")
+        await callback.message.edit_text("🗑 <b>Запись успешно удалена из вашей базы.</b>", parse_mode="HTML")
+    else:
+        await callback.answer("❌ Ошибка удаления", show_alert=True)
+
+# STEP 3: Cancel (stays the same)
+@router.callback_query(F.data == "cancel_del")
+async def cancel_delete(callback: CallbackQuery):
+    await callback.answer("Отменено")
+    await callback.message.edit_text("✅ <b>Запись оставлена в вашем профиле.</b>", parse_mode="HTML")
 
 # --- БЛОК 4: СВОБОДНЫЙ ЧАТ ---
 
@@ -263,8 +321,9 @@ async def handle_user_query(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     
     if not history:
-        await message.answer("Сначала загрузи анализ, чтобы мне было на что опираться.")
+        await message.answer("Сначала загрузите анализ, чтобы мне было на что опираться.")
         return
 
     answer = await ask_medical_ai(message.text, history)
     await message.answer(answer, parse_mode="Markdown")
+    

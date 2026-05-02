@@ -136,3 +136,49 @@ def _sync_get_analyses(user_id, limit, days):
     except Exception as e:
         logger.error(f"❌ Ошибка при получении данных: {e}")
         return []
+
+async def delete_analysis_from_db(user_id, analysis_id):
+    """
+    Асинхронная обертка для удаления анализа из Firestore.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _sync_delete_analysis, user_id, analysis_id)
+
+def _sync_delete_analysis(user_id, analysis_id):
+    """
+    Синхронная логика удаления документа и его подколлекции маркеров.
+    """
+    try:
+        db = get_db()
+        if not db:
+            return False
+            
+        app_id = config.STAPLER_APP_ID
+        user_id_str = str(user_id)
+        
+        # Ссылка на документ анализа
+        analysis_ref = db.collection('artifacts').document(app_id) \
+                         .collection('users').document(user_id_str) \
+                         .collection('analyses').document(analysis_id)
+
+        # В Firestore удаление документа не удаляет его подколлекции автоматически.
+        # 1. Сначала удаляем все маркеры в подколлекции 'markers'
+        markers_ref = analysis_ref.collection('markers').stream()
+        batch = db.batch()
+        count = 0
+        for marker in markers_ref:
+            batch.delete(marker.reference)
+            count += 1
+        
+        if count > 0:
+            batch.commit()
+            logger.info(f"🗑 Удалено {count} маркеров для анализа {analysis_id}")
+
+        # 2. Удаляем основной документ анализа
+        analysis_ref.delete()
+        
+        logger.info(f"✅ Анализ {analysis_id} полностью удален из базы.")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка при удалении из Firestore: {e}")
+        return False
