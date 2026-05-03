@@ -2,7 +2,7 @@ import os
 import logging
 from datetime import datetime
 from exporter import create_medical_report
-from aiogram import Router, F, types, Bot
+from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -39,35 +39,30 @@ async def cmd_start(message: Message):
         parse_mode="HTML"
     )
 
-@router.message(Command("history")) # команда бота - history
+@router.message(Command("history"))
 async def cmd_history(message: Message):
     history = await get_recent_analyses(message.from_user.id, limit=10)
     if not history:
-        await message.answer("Ваша база данных пока пуста.")
+        await message.answer("📋 <b>История пока пуста.</b>", parse_mode="HTML")
         return
     
-    text = "📅 <b>Последние анализы:</b>\n\n"
-    for a in history:
-        text += f"• {a.get('date')} — {a.get('title')}\n"
+    await message.answer("📅 <b>Ваши последние анализы:</b>", parse_mode="HTML")
     
-    await message.answer(text, parse_mode="HTML")
-
-@router.message(Command("analysis")) # команда бота - analysis
-async def cmd_analysis(message: Message):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🗓 Месяц", callback_data="period_30"),
-            InlineKeyboardButton(text="🗓 3 Месяца", callback_data="period_90")
-        ],
-        [
-            InlineKeyboardButton(text="🗓 Полгода", callback_data="period_180"),
-            InlineKeyboardButton(text="🗓 Год", callback_data="period_365")
-        ],
-        [
-            InlineKeyboardButton(text="📈 Вся история", callback_data="period_3650")
-        ]
-    ])
-    await message.answer("📊 <b>Анализ динамики</b>\n\nЗа какой период проанализировать показатели?", reply_markup=keyboard, parse_mode="HTML")
+    for item in history:
+        a_id = item.get('id')
+        title = item.get('title', 'Анализ')
+        date = item.get('date', 'н/д')
+        
+        # Передаем ТОЛЬКО ID, чтобы влезть в лимит 64 байта
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_req|{a_id}")]
+        ])
+        
+        await message.answer(
+            f"📋 <b>{title}</b>\n📅 Дата: {date}", 
+            reply_markup=keyboard, 
+            parse_mode="HTML"
+        )
 
 @router.message(Command("export")) # команда бота - export
 async def cmd_export(message: Message):
@@ -235,7 +230,11 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
 async def process_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     # In your code, 'success' actually contains the analysis_id from database.py
-    analysis_id = await save_analysis_to_db(callback.from_user.id, data.get("temp_analysis"), data.get("file_unique_id"))
+    analysis_id = await save_analysis_to_db(
+        callback.from_user.id,
+        data.get("temp_analysis"),
+        data.get("file_unique_id")
+    )
     
     if analysis_id == "duplicate":
         await callback.answer("⚠️ Этот анализ уже сохранен!", show_alert=True)
@@ -257,10 +256,12 @@ async def process_save(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🗑 Удалить эту запись", callback_data=cb_data)]
         ])
 
+        # Send confirmation message with delete option
         text = (
             "💾 <b>Данные сохранены в ваш личный профиль.</b>\n"
             "❗ <b>Не является диагнозом. Обратитесь к врачу.</b>"
         )
+        # using answer (new message) instead of edit_text to avoid issues with message length and formatting
         await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await callback.answer("❌ Ошибка при сохранении", show_alert=True)
@@ -274,26 +275,35 @@ async def process_discard(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("del_req|"))
 async def confirm_delete_request(callback: CallbackQuery):
-    # Unpack the data
-    _, analysis_id, date, title = callback.data.split("|")
-    
-    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_del_{analysis_id}"),
-            InlineKeyboardButton(text="❌ Нет, оставить", callback_data="cancel_del")
-        ]
-    ])
-    
-    await callback.message.edit_text(
-        f"❓ <b>Вы уверены, что хотите удалить запись?</b>\n\n"
-        f"📋 <b>{title}</b>\n"
-        f"📅 <b>Дата: {date}</b>\n\n"
-        f"⚠️ Это действие нельзя отменить.",
-        reply_markup=confirm_kb,
-        parse_mode="HTML"
-    )
+    try:
+        # Теперь мы забираем только ID (так как в кнопке больше ничего нет)
+        parts = callback.data.split("|")
+        analysis_id = parts[1] # Берем второй элемент после разделителя |
+        
+        # Вытаскиваем название анализа прямо из текста сообщения бота
+        # Мы берем первую строку сообщения (где стоит эмодзи 📋 и название)
+        msg_lines = callback.message.text.split('\n')
+        display_name = msg_lines[0] if msg_lines else "анализ"
 
-# STEP 2: The actual execution (stays mostly the same)
+        confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_del_{analysis_id}"),
+                InlineKeyboardButton(text="❌ Нет, оставить", callback_data="cancel_del")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            f"❓ <b>Вы уверены, что хотите удалить запись?</b>\n\n"
+            f"{display_name}\n\n"
+            f"⚠️ Это действие нельзя отменить.",
+            reply_markup=confirm_kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Error in delete confirmation: {e}")
+        await callback.answer("❌ Ошибка при подготовке удаления", show_alert=True)
+        
+# The actual execution (stays mostly the same)
 @router.callback_query(F.data.startswith("confirm_del_"))
 async def execute_delete(callback: CallbackQuery):
     analysis_id = callback.data.replace("confirm_del_", "")
@@ -307,13 +317,17 @@ async def execute_delete(callback: CallbackQuery):
     else:
         await callback.answer("❌ Ошибка удаления", show_alert=True)
 
-# STEP 3: Cancel (stays the same)
+# Cancel (stays the same)
 @router.callback_query(F.data == "cancel_del")
 async def cancel_delete(callback: CallbackQuery):
-    await callback.answer("Отменено")
-    await callback.message.edit_text("✅ <b>Запись оставлена в вашем профиле.</b>", parse_mode="HTML")
+    await callback.answer("Действие отменено")
+    await callback.message.edit_text(
+        "✅ <b>Запись оставлена в вашем профиле.</b>\n"
+        "Вы можете найти её с помощью команды /history"
+        , parse_mode="HTML"
+    )
 
-# --- БЛОК 4: СВОБОДНЫЙ ЧАТ ---
+# СВОБОДНЫЙ ЧАТ 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_user_query(message: Message):

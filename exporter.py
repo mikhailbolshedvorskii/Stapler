@@ -3,29 +3,26 @@ import io
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# 1. Регистрация шрифта (DejaVuSans поддерживает кириллицу)
+# 1. Регистрация шрифта (DejaVuSans.ttf должен лежать в папке проекта!)
 FONT_PATH = "DejaVuSans.ttf"
 if os.path.exists(FONT_PATH):
     pdfmetrics.registerFont(TTFont('DejaVuSans', FONT_PATH))
     MAIN_FONT = 'DejaVuSans'
-    BOLD_FONT = 'DejaVuSans' # Если есть DejaVuSans-Bold.ttf, лучше использовать его
 else:
-    # Если шрифта нет, PDF будет на английском (русский пропадет)
+    # Если шрифт не найден, кириллица может отображаться некорректно
     MAIN_FONT = 'Helvetica'
-    BOLD_FONT = 'Helvetica-Bold'
 
-def create_medical_report(user_name, history, charts_data=None):
+def create_medical_report(user_name, history, charts_data=None, ai_summary=None):
     """
-    Создает профессиональный PDF-отчет со структурированными таблицами и графиками.
+    Создает профессиональный PDF-отчет со структурированными данными и графиками.
     """
     buffer = io.BytesIO()
-    # Настройка документа с полями
     doc = SimpleDocTemplate(
         buffer, 
         pagesize=A4, 
@@ -38,7 +35,7 @@ def create_medical_report(user_name, history, charts_data=None):
     elements = []
     styles = getSampleStyleSheet()
 
-    # Кастомные стили для русского языка и верстки
+    # Кастомные стили для русского языка
     rus_style = ParagraphStyle(
         'RusStyle',
         fontName=MAIN_FONT,
@@ -47,21 +44,12 @@ def create_medical_report(user_name, history, charts_data=None):
         spaceAfter=6
     )
     
-    header_style = ParagraphStyle(
-        'HeaderStyle',
-        fontName=MAIN_FONT,
-        fontSize=14,
-        leading=18,
-        spaceBefore=15,
-        spaceAfter=10
-    )
-
     title_style = ParagraphStyle(
         'TitleStyle',
         fontName=MAIN_FONT,
         fontSize=20,
         alignment=1, # По центру
-        spaceAfter=30
+        spaceAfter=20
     )
 
     # --- ТИТУЛЬНЫЙ БЛОК ---
@@ -69,31 +57,35 @@ def create_medical_report(user_name, history, charts_data=None):
     elements.append(Paragraph(f"<b>Пациент:</b> {user_name}", rus_style))
     elements.append(Paragraph(f"<b>Дата формирования:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", rus_style))
     elements.append(Spacer(1, 10))
-    elements.append(HRFlowable(width=1, color=colors.grey))
-    elements.append(Spacer(1, 20))
+    elements.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+    elements.append(Spacer(1, 15))
 
-    # --- ОСНОВНОЙ БЛОК: ТАБЛИЦЫ АНАЛИЗОВ ---
+    # --- ОБЩЕЕ РЕЗЮМЕ ОТ ИИ (если передано) ---
+    if ai_summary:
+        elements.append(Paragraph("<b>🤖 Общее заключение ассистента Gemini:</b>", rus_style))
+        elements.append(Paragraph(f"<i>{ai_summary}</i>", rus_style))
+        elements.append(Spacer(1, 15))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
+        elements.append(Spacer(1, 15))
+
+    # --- ОСНОВНОЙ БЛОК: ИСТОРИЯ АНАЛИЗОВ ---
     # Сортируем историю по дате (от новых к старым)
     sorted_history = sorted(history, key=lambda x: x.get('date', ''), reverse=True)
 
     for record in sorted_history:
-        # 1. Заголовок и лаборатория (уже есть в коде)
-        elements.append(Paragraph(f"📅 {record.get('date')} — {record.get('title')}", header_style))
+        elements.append(Paragraph(f"📅 <b>{record.get('date')} — {record.get('title')}</b>", rus_style))
         elements.append(Paragraph(f"🏥 Лаборатория: {record.get('laboratory', 'н/д')}", rus_style))
-        elements.append(Spacer(1, 10))
+        elements.append(Spacer(1, 8))
 
-        # --- НОВАЯ ЛОГИКА ТУТ ---
         indicators = record.get('indicators', [])
         
-        # Если это текстовый отчет (рентген) и список показателей пуст
         if not indicators:
+            # Логика для текстовых отчетов (Рентген, УЗИ, МРТ)
             elements.append(Paragraph("<b>Описание / Заключение:</b>", rus_style))
-            # Берем текст из поля summary
-            summary_text = record.get('summary', 'Описание отсутствует в базе.')
-            elements.append(Paragraph(summary_text, rus_style))
-            elements.append(Spacer(1, 15))
+            elements.append(Paragraph(record.get('summary', 'Описание отсутствует'), rus_style))
+            elements.append(Spacer(1, 10))
         else:
-            # Если показатели есть, рисуем таблицу (твой текущий код)
+            # Логика для табличных анализов (Кровь, Моча и т.д.)
             data = [[
                 Paragraph("<b>Показатель</b>", rus_style), 
                 Paragraph("<b>Значение</b>", rus_style), 
@@ -104,55 +96,51 @@ def create_medical_report(user_name, history, charts_data=None):
             for ind in indicators:
                 status_map = {"normal": "Норма", "high": "Выше", "low": "Ниже"}
                 status_rus = status_map.get(ind.get('status', ''), ind.get('status', ''))
-                name_p = Paragraph(ind.get('name', 'Неизвестно'), rus_style)
                 
-                data.append([
-                    name_p,
-                    f"{ind.get('value', '')} {ind.get('unit', '')}",
-                    ind.get('norm', ''),
-                    status_rus
-                ])
+                # Используем Paragraph для переноса текста внутри ячеек
+                name_p = Paragraph(ind.get('name', 'н/д'), rus_style)
+                value_p = Paragraph(f"{ind.get('value', '')} {ind.get('unit', '')}", rus_style)
+                norm_p = Paragraph(ind.get('norm', ''), rus_style)
+                status_p = Paragraph(status_rus, rus_style)
+                
+                data.append([name_p, value_p, norm_p, status_p])
 
-            col_widths = [265, 80, 90, 80]
+            # Настройка ширины колонок (в пунктах)
+            col_widths = [140, 110, 155, 100]
+            
             t = Table(data, colWidths=col_widths, hAlign='LEFT')
             t.setStyle(TableStyle([
                 ('FONTNAME', (0,0), (-1,-1), MAIN_FONT),
                 ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
                 ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
                 ('VALIGN', (0,0), (-1,-1), 'TOP'),
-                ('LEFTPADDING', (0,0), (-1,-1), 6),
-                ('RIGHTPADDING', (0,0), (-1,-1), 6),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-                ('TOPPADDING', (0,0), (-1,-1), 6),
+                ('LEFTPADDING', (0,0), (-1,-1), 5),
+                ('RIGHTPADDING', (0,0), (-1,-1), 5),
             ]))
             elements.append(t)
-            elements.append(Spacer(1, 20))
             
-            # В конце табличного анализа тоже добавим краткое резюме, если оно есть
+            # Добавляем комментарий под таблицей, если он есть
             if record.get('summary'):
+                elements.append(Spacer(1, 8))
                 elements.append(Paragraph(f"<i>Комментарий: {record.get('summary')}</i>", rus_style))
-                elements.append(Spacer(1, 15))
 
-        # Линия-разделитель между разными анализами для "воздуха"
-        elements.append(HRFlowable(width=0.5, color=colors.lightgrey))
-        elements.append(Spacer(1, 20))
+        # Разделитель между анализами
+        elements.append(Spacer(1, 15))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
+        elements.append(Spacer(1, 15))
 
     # --- БЛОК ГРАФИКОВ ---
     if charts_data:
-        # Переход на новую страницу для графиков
-        from reportlab.platypus import PageBreak
         elements.append(PageBreak())
-        elements.append(Paragraph("📊 Динамика ключевых показателей", title_style))
+        elements.append(Paragraph("<b>📊 Динамика ключевых показателей</b>", title_style))
         elements.append(Spacer(1, 20))
-
         for chart_buf in charts_data:
-            # Превращаем BufferedInputFile (байты) в изображение
             img_data = io.BytesIO(chart_buf.data)
             img = Image(img_data, width=460, height=260)
             elements.append(img)
-            elements.append(Spacer(1, 30))
+            elements.append(Spacer(1, 20))
 
-    # Генерация документа
+    # Сборка документа
     doc.build(elements)
     buffer.seek(0)
     return buffer
