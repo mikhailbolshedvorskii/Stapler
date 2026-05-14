@@ -9,19 +9,14 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# 1. Регистрация шрифта (DejaVuSans.ttf должен лежать в папке проекта!)
 FONT_PATH = "DejaVuSans.ttf"
 if os.path.exists(FONT_PATH):
     pdfmetrics.registerFont(TTFont('DejaVuSans', FONT_PATH))
     MAIN_FONT = 'DejaVuSans'
 else:
-    # Если шрифт не найден, кириллица может отображаться некорректно
     MAIN_FONT = 'Helvetica'
 
 def create_medical_report(user_name, history, charts_data=None, ai_summary=None):
-    """
-    Создает профессиональный PDF-отчет со структурированными данными и графиками.
-    """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, 
@@ -35,7 +30,6 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
     elements = []
     styles = getSampleStyleSheet()
 
-    # Кастомные стили для русского языка
     rus_style = ParagraphStyle(
         'RusStyle',
         fontName=MAIN_FONT,
@@ -48,7 +42,7 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
         'TitleStyle',
         fontName=MAIN_FONT,
         fontSize=20,
-        alignment=1, # По центру
+        alignment=1,
         spaceAfter=20
     )
 
@@ -60,7 +54,7 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
     elements.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
     elements.append(Spacer(1, 15))
 
-    # --- ОБЩЕЕ РЕЗЮМЕ ОТ ИИ (если передано) ---
+    # --- ОБЩЕЕ РЕЗЮМЕ ОТ ИИ ---
     if ai_summary:
         elements.append(Paragraph("<b>🤖 Общее заключение ассистента Gemini:</b>", rus_style))
         elements.append(Paragraph(f"<i>{ai_summary}</i>", rus_style))
@@ -68,8 +62,7 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
         elements.append(Spacer(1, 15))
 
-    # --- ОСНОВНОЙ БЛОК: ИСТОРИЯ АНАЛИЗОВ ---
-    # Сортируем историю по дате (от новых к старым)
+    # --- ИСТОРИЯ АНАЛИЗОВ ---
     sorted_history = sorted(history, key=lambda x: x.get('date', ''), reverse=True)
 
     for record in sorted_history:
@@ -80,12 +73,10 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
         indicators = record.get('indicators', [])
         
         if not indicators:
-            # Логика для текстовых отчетов (Рентген, УЗИ, МРТ)
             elements.append(Paragraph("<b>Описание / Заключение:</b>", rus_style))
             elements.append(Paragraph(record.get('summary', 'Описание отсутствует'), rus_style))
             elements.append(Spacer(1, 10))
         else:
-            # Логика для табличных анализов (Кровь, Моча и т.д.)
             data = [[
                 Paragraph("<b>Показатель</b>", rus_style), 
                 Paragraph("<b>Значение</b>", rus_style), 
@@ -94,10 +85,15 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
             ]]
 
             for ind in indicators:
-                status_map = {"normal": "Норма", "high": "Выше", "low": "Ниже"}
+                status_map = {
+                    "normal": "Норма",
+                    "attention": "Внимание",
+                    "high": "Выше",
+                    "low": "Ниже",
+                    "pathology": "Патология"
+                }
                 status_rus = status_map.get(ind.get('status', ''), ind.get('status', ''))
                 
-                # Используем Paragraph для переноса текста внутри ячеек
                 name_p = Paragraph(ind.get('name', 'н/д'), rus_style)
                 value_p = Paragraph(f"{ind.get('value', '')} {ind.get('unit', '')}", rus_style)
                 norm_p = Paragraph(ind.get('norm', ''), rus_style)
@@ -105,8 +101,7 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
                 
                 data.append([name_p, value_p, norm_p, status_p])
 
-            # Настройка ширины колонок (в пунктах)
-            col_widths = [140, 110, 155, 100]
+            col_widths = [150, 155, 130, 80]
             
             t = Table(data, colWidths=col_widths, hAlign='LEFT')
             t.setStyle(TableStyle([
@@ -119,12 +114,10 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
             ]))
             elements.append(t)
             
-            # Добавляем комментарий под таблицей, если он есть
             if record.get('summary'):
                 elements.append(Spacer(1, 8))
                 elements.append(Paragraph(f"<i>Комментарий: {record.get('summary')}</i>", rus_style))
 
-        # Разделитель между анализами
         elements.append(Spacer(1, 15))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
         elements.append(Spacer(1, 15))
@@ -140,7 +133,6 @@ def create_medical_report(user_name, history, charts_data=None, ai_summary=None)
             elements.append(img)
             elements.append(Spacer(1, 20))
 
-    # Сборка документа
     doc.build(elements)
     buffer.seek(0)
     return buffer

@@ -195,10 +195,20 @@ async def handle_medical_file(message: Message, state: FSMContext, bot: Bot):
         )
         
         for ind in analysis_results.get('indicators', []):
-            status_ico = "✅" if ind.get('status') == 'normal' else "⚠️"
+            # Эти строки должны быть на одном уровне внутри цикла
+            status_icons = {
+                "normal": "✅",
+                "attention": "⚠️", 
+                "high": "🔴",
+                "low": "🔴",
+                "pathology": "🚨"
+            }
+            status_ico = status_icons.get(ind.get('status'), "❓")
+            
             norm_text = f" (<i>Норма: {ind.get('norm')}</i>)" if ind.get('norm') else ""
             preview += f"{status_ico} {ind['name']}: {ind['value']} {ind.get('unit', '')}{norm_text}\n"
 
+        # Этот блок уже ВНЕ цикла (на одном уровне с for)
         preview += (
             f"\n🤖 <b>Комментарий Google Gemini:</b>\n"
             f"<i>{analysis_results.get('summary', 'Описание отсутствует')}</i>\n\n"
