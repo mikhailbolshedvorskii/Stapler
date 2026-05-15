@@ -106,7 +106,27 @@ async def cmd_export(message: Message):
         await status_msg.edit_text("💥 Произошла ошибка при генерации PDF-отчета.")
 
 # --- БЛОК 2: ОБРАБОТКА КНОПОК ПЕРИОДА (АНАЛИТИКА + ГРАФИКИ) ---
-
+@router.message(Command("analysis"))
+async def cmd_analysis(message: Message):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🗓 Месяц", callback_data="period_30"),
+            InlineKeyboardButton(text="🗓 3 Месяца", callback_data="period_90")
+        ],
+        [
+            InlineKeyboardButton(text="🗓 Полгода", callback_data="period_180"),
+            InlineKeyboardButton(text="🗓 Год", callback_data="period_365")
+        ],
+        [
+            InlineKeyboardButton(text="📈 Вся история", callback_data="period_3650")
+        ]
+    ])
+    await message.answer(
+        "📊 <b>Анализ динамики</b>\n\nЗа какой период проанализировать показатели?", 
+        reply_markup=keyboard, 
+        parse_mode="HTML"
+    )
+    
 @router.callback_query(F.data.startswith("period_"))
 async def process_period_analysis(callback: CallbackQuery):
     days = int(callback.data.split("_")[1]) # Исправлен сплит
@@ -140,6 +160,61 @@ async def process_period_analysis(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка аналитики: {e}")
         await callback.message.edit_text("💥 Ошибка при формировании отчета.")
+
+@router.message(Command("delete"))
+async def cmd_delete_menu(message: Message):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🗓 Месяц", callback_data="delperiod_30"),
+            InlineKeyboardButton(text="🗓 3 Месяца", callback_data="delperiod_90")
+        ],
+        [
+            InlineKeyboardButton(text="🗓 Полгода", callback_data="delperiod_180"),
+            InlineKeyboardButton(text="🗓 Год", callback_data="delperiod_365")
+        ],
+        [
+            InlineKeyboardButton(text="📈 Вся история", callback_data="delperiod_3650")
+        ]
+    ])
+    await message.answer(
+        "🗑 <b>Удаление анализов</b>\n\n"
+        "За какой период вы хотите просмотреть анализы для удаления?", 
+        reply_markup=keyboard, 
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data.startswith("delperiod_"))
+async def process_delete_period(callback: CallbackQuery):
+    days = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    
+    await callback.message.edit_text(f"⌛ <b>Ищу записи за {days} дн...</b>", parse_mode="HTML")
+    
+    # Запрашиваем историю из базы за конкретный период
+    history = await get_recent_analyses(user_id, limit=50, days=days)
+    
+    if not history:
+        await callback.message.edit_text("❌ За этот период анализов не найдено.")
+        return
+
+    await callback.message.delete() # Удаляем меню выбора периода
+    
+    # Выводим каждую запись с кнопкой удаления (используем наш рабочий del_req)
+    for item in history:
+        analysis_id = item.get('id')
+        title = item.get('title', 'Анализ')
+        date = item.get('date', 'н/д')
+        
+        # Передаем только ID, чтобы не взорвать лимит в 64 байта
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить эту запись", callback_data=f"del_req|{analysis_id}")]
+        ])
+        
+        await callback.message.answer(
+            f"📋 <b>{title}</b>\n📅 Дата: {date}", 
+            reply_markup=keyboard, 
+            parse_mode="HTML"
+        )
 
 @router.callback_query(F.data == "back_to_analysis")
 async def back_to_analysis(callback: CallbackQuery):

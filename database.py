@@ -99,7 +99,9 @@ async def get_recent_analyses(user_id, limit: int = 5, days: int = None):
     return await loop.run_in_executor(None, _sync_get_analyses, user_id, limit, days)
 
 def _sync_get_analyses(user_id, limit, days):
-    """Синхронная логика выборки из БД."""
+    """
+    Синхронная логика выборки из БД с фильтрацией по РЕАЛЬНОЙ дате анализа.
+    """
     try:
         db = get_db()
         if not db: return []
@@ -107,15 +109,15 @@ def _sync_get_analyses(user_id, limit, days):
         user_ref = db.collection('artifacts').document(config.STAPLER_APP_ID) \
                      .collection('users').document(str(user_id)) \
                      .collection('analyses')
-        
-        # Сначала создаем базовый запрос
-        query = user_ref.order_by(field_path="created_at", direction=firestore.Query.DESCENDING)
 
-        # Затем, ЕСЛИ указаны дни, добавляем фильтр
+        # Сортируем по реальной дате бланка (от новых к старым)
+        query = user_ref.order_by("date", direction=firestore.Query.DESCENDING)
 
+        # Если задан период (days), вычисляем пограничную дату в формате строки ГГГГ-ММ-ДД
         if days:
-            start_date = datetime.now() - timedelta(days=days)
-            query = query.where(field_path="created_at", op_string=">=", value=start_date)
+            target_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            # Фильтруем строки: выбираем даты, которые "больше или равны" target_date
+            query = query.where(field_path="date", op_string=">=", value=target_date)
 
         if limit:
             query = query.limit(limit)
@@ -126,7 +128,7 @@ def _sync_get_analyses(user_id, limit, days):
             data = doc.to_dict()
             data['id'] = doc.id
             
-            # Важно для графиков: подгружаем все маркеры для каждого анализа
+            # Подгружаем маркеры
             markers_docs = doc.reference.collection('markers').stream()
             data['indicators'] = [m.to_dict() for m in markers_docs]
             
@@ -134,7 +136,7 @@ def _sync_get_analyses(user_id, limit, days):
             
         return history
     except Exception as e:
-        logger.error(f"❌ Ошибка при получении данных: {e}")
+        logger.error(f"❌ Ошибка при получении данных из Firestore: {e}")
         return []
 
 async def delete_analysis_from_db(user_id, analysis_id):
