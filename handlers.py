@@ -424,15 +424,15 @@ async def cancel_delete(callback: CallbackQuery):
 
 # СВОБОДНЫЙ ЧАТ 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def handle_user_query(message: Message):
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    history = await get_recent_analyses(message.from_user.id, limit=10)
+# @router.message(F.text & ~F.text.startswith("/"))
+# async def handle_user_query(message: Message):
+#     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+#     history = await get_recent_analyses(message.from_user.id, limit=10)
     
-    if not history:
-        await message.answer("Сначала загрузите анализ, чтобы мне было на что опираться.")
-        return
+#     if not history:
+#         await message.answer("Сначала загрузите анализ, чтобы мне было на что опираться.")
+#         return
 
-    answer = await ask_medical_ai(message.text, history)
-    await message.answer(answer, parse_mode="Markdown")
+#     answer = await ask_medical_ai(message.text, history)
+#     await message.answer(answer, parse_mode="Markdown")
     
